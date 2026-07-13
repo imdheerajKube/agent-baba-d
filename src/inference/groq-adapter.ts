@@ -1,6 +1,7 @@
 import { InferenceProvider, ModelDescriptor } from './interface.js';
 import { InferenceOptions, ProviderConfig } from '../config/types.js';
 import { logger } from '../utils/logger.js';
+import { streamCompletion } from './sse.js';
 
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 
@@ -55,6 +56,30 @@ export class GroqAdapter implements InferenceProvider {
 
     const data = (await response.json()) as GroqResponse;
     return data.choices[0]?.message?.content || '';
+  }
+
+  async generateStream(
+    prompt: string,
+    options: InferenceOptions | undefined,
+    onToken: (token: string) => void,
+  ): Promise<string> {
+    const apiKey = this.config.apiKey;
+    if (!apiKey) {
+      throw new Error('Groq API key is not configured. Set GROQ_API_KEY env var.');
+    }
+
+    const model = options?.model || this.config.model || 'llama-3.3-70b-versatile';
+    const temperature = options?.temperature ?? this.config.temperature ?? 0.7;
+    const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
+
+    logger.debug(`Groq: Streaming with model=${model}, temperature=${temperature}, maxTokens=${maxTokens}`);
+
+    return streamCompletion(
+      `${GROQ_BASE_URL}/chat/completions`,
+      { 'Authorization': `Bearer ${apiKey}` },
+      { model, messages: [{ role: 'user', content: prompt }], temperature, max_tokens: maxTokens },
+      onToken,
+    );
   }
 
   async isAvailable(): Promise<boolean> {

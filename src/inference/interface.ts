@@ -26,6 +26,17 @@ export interface InferenceProvider {
   generate(prompt: string, options?: InferenceOptions): Promise<string>;
 
   /**
+   * Generate a streaming completion for the given prompt.
+   * Tokens are delivered to onToken as they arrive.
+   * Returns the full generated text content.
+   */
+  generateStream?(
+    prompt: string,
+    options: InferenceOptions | undefined,
+    onToken: (token: string) => void
+  ): Promise<string>;
+
+  /**
    * Check if the provider is properly configured and available
    */
   isAvailable(): Promise<boolean>;

@@ -97,36 +97,62 @@ export class ChatCommand extends BaseCommand {
       // Build context from history
       const contextStr = history.map((h) => `${h.role}: ${h.content}`).join('\n');
 
-      const spinner = ora('Thinking...').start();
+      const cache = getCache();
+      const effectiveModel = model || this.configManager.getProviderConfig(type).config.model || 'default';
 
-      try {
-        const cache = getCache();
-        const effectiveModel = model || this.configManager.getProviderConfig(type).config.model || 'default';
-        let result: string | null = null;
-
-        // Check cache if enabled
-        if (cacheEnabled) {
-          result = await cache.get(message, effectiveModel, type);
+      // Check cache first
+      if (cacheEnabled) {
+        const cachedResult = await cache.get(message, effectiveModel, type);
+        if (cachedResult) {
+          console.log(`\n${cachedResult}\n`);
+          history.push({ role: 'assistant', content: cachedResult });
+          continue;
         }
+      }
 
-        if (!result) {
-          const context = new ContextParser().parseFromString(contextStr, 'chat');
-          const fullPrompt = ContextParser.formatContext(context);
+      const context = new ContextParser().parseFromString(contextStr, 'chat');
+      const fullPrompt = ContextParser.formatContext(context);
 
-          result = await provider.generate(fullPrompt, { ...options, model: effectiveModel });
+      // Use streaming when available
+      if (typeof provider.generateStream === 'function') {
+        console.log(); // Newline before response
+        try {
+          const result = await provider.generateStream(
+            fullPrompt,
+            { ...options, model: effectiveModel },
+            (token: string) => {
+              process.stdout.write(token);
+            },
+          );
+          console.log('\n');
 
           // Cache the result if caching is enabled
           if (cacheEnabled) {
             await cache.set(message, result, effectiveModel, type);
           }
-        }
 
-        spinner.stop();
-        console.log(`\n${result}\n`);
-        history.push({ role: 'assistant', content: result });
-      } catch (err) {
-        spinner.fail('Failed to generate response');
-        logger.error(String(err));
+          history.push({ role: 'assistant', content: result });
+        } catch (err) {
+          console.log(); // Newline after error
+          logger.error(String(err));
+        }
+      } else {
+        // Fallback: non-streaming with spinner
+        const spinner = ora('Thinking...').start();
+        try {
+          const result = await provider.generate(fullPrompt, { ...options, model: effectiveModel });
+          spinner.stop();
+          console.log(`\n${result}\n`);
+
+          if (cacheEnabled) {
+            await cache.set(message, result, effectiveModel, type);
+          }
+
+          history.push({ role: 'assistant', content: result });
+        } catch (err) {
+          spinner.fail('Failed to generate response');
+          logger.error(String(err));
+        }
       }
     }
   }
@@ -355,6 +381,20 @@ Commands:
       fullPrompt = `${contextStr}\n\n## User Query\n${prompt}`;
     }
 
+    // Use streaming when available (silently collect, caller handles display)
+    if (typeof provider.generateStream === 'function') {
+      const chunks: string[] = [];
+      await provider.generateStream(
+        fullPrompt,
+        options,
+        (token: string) => {
+          chunks.push(token);
+        },
+      );
+      return chunks.join('');
+    }
+
+    // Fallback: non-streaming with spinner
     const spinner = ora(`Generating with ${provider.name}...`).start();
 
     try {
