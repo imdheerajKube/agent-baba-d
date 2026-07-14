@@ -4,6 +4,9 @@
 # This workflow verifies that agent-baba-d works correctly on Windows,
 # which is critical since the tool uses child_process (execSync), temp directories,
 # path manipulation, and other platform-sensitive operations.
+#
+# Note: Vitest 4.x dependencies (rolldown) require Node >= 21.7 for `node:util.styleText`.
+# Only Node 22+ is tested here. For older Node versions, use vitest 3.x or older.
 
 name: test-windows
 
@@ -17,12 +20,11 @@ on:
       node_version:
         description: 'Node.js version to test'
         required: false
-        default: '20'
+        default: '22'
         type: choice
         options:
-          - '18'
-          - '20'
           - '22'
+          - '23'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -36,9 +38,8 @@ jobs:
       fail-fast: false
       matrix:
         node-version:
-          - 18
-          - 20
           - 22
+          - 23
     timeout-minutes: 10
 
     steps:
