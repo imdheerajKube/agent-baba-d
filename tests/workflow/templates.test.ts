@@ -458,6 +458,9 @@ describe('WorkflowCommand CLI structure', () => {
 
     beforeEach(() => {
       runCmd = command.commands.find((c) => c.name() === 'run')!;
+      // exitOverride ensures commander throws instead of calling process.exit()
+      // This is critical for Windows CI where commander's error exit behavior differs
+      runCmd.exitOverride();
     });
 
     it('should have a --provider option with -p short flag', () => {
@@ -500,8 +503,6 @@ describe('WorkflowCommand CLI structure', () => {
     });
 
     it('should reject missing required arguments', () => {
-      // Use exitOverride to ensure commander throws instead of exiting
-      runCmd.exitOverride();
       expect(() => {
         runCmd.parse(['quick-fix'], { from: 'user' });
       }).toThrow();
