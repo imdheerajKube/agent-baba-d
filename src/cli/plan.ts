@@ -26,7 +26,7 @@ export class PlanCommand extends BaseCommand {
   }
 
   private async execute(target: string, options?: { task?: string; provider?: string; model?: string; verbose?: boolean }): Promise<void> {
-    const { type, provider } = this.getProvider(options || {});
+    const { type, provider } = await this.getProvider(options || {});
 
     const available = await provider.isAvailable();
     if (!available) {

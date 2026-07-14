@@ -1,0 +1,68 @@
+# Windows CI — runs the test suite on Windows runners to catch cross-platform regressions.
+# Triggered on push/PR to main, and can be run manually.
+#
+# This workflow verifies that agent-baba-d works correctly on Windows,
+# which is critical since the tool uses child_process (execSync), temp directories,
+# path manipulation, and other platform-sensitive operations.
+
+name: test-windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: 'Node.js version to test'
+        required: false
+        default: '20'
+        type: choice
+        options:
+          - '18'
+          - '20'
+          - '22'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test on Windows (Node ${{ matrix.node-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - 18
+          - 20
+          - 22
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        shell: bash
+
+      - name: Build project
+        run: npm run build
+        shell: bash
+
+      - name: Run tests
+        run: npx vitest run --reporter=verbose
+        shell: bash
+        env:
+          CI: true
+          NODE_OPTIONS: --no-warnings

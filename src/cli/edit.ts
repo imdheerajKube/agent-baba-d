@@ -31,7 +31,7 @@ export class EditCommand extends BaseCommand {
       return;
     }
 
-    const { type, provider } = this.getProvider(options || {});
+    const { type, provider } = await this.getProvider(options || {});
 
     const available = await provider.isAvailable();
     if (!available) {

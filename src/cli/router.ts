@@ -9,6 +9,10 @@ import { PlanCommand } from './plan.js';
 import { ConfigCommand } from './config.js';
 import { CacheCommand } from './cache.js';
 import { ModelsCommand } from './models.js';
+import { ExecuteCommand } from './execute.js';
+import { WorkflowCommand } from './workflow.js';
+import { PluginsCommand } from './plugins.js';
+import { LearnCommand } from './learn.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -33,6 +37,7 @@ export function createCLI(): Command {
   const configCmd = new ConfigCommand();
   const cacheCmd = new CacheCommand();
   const modelsCmd = new ModelsCommand();
+  const executeCmd = new ExecuteCommand();
 
   program.addCommand(chatCmd.create());
   program.addCommand(editCmd.create());
@@ -40,6 +45,16 @@ export function createCLI(): Command {
   program.addCommand(configCmd.create());
   program.addCommand(cacheCmd.create());
   program.addCommand(modelsCmd.create());
+  program.addCommand(executeCmd.create());
+  
+  const workflowCmd = new WorkflowCommand();
+  program.addCommand(workflowCmd.create());
+
+  const pluginsCmd = new PluginsCommand();
+  program.addCommand(pluginsCmd.create());
+
+  const learnCmd = new LearnCommand();
+  program.addCommand(learnCmd.create());
 
   // Default action: show help
   program.action(() => {

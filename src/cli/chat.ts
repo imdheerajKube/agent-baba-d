@@ -30,7 +30,7 @@ export class ChatCommand extends BaseCommand {
   }
 
   private async execute(prompt?: string, options?: { file?: string; provider?: string; model?: string; cache?: boolean }): Promise<void> {
-    let { type, provider } = this.getProvider(options || {});
+    let { type, provider } = await this.getProvider(options || {});
     let model = options?.model;
 
     // In interactive mode (no prompt), show the model picker if no --model was specified

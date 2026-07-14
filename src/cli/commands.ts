@@ -1,6 +1,5 @@
 import { Command } from 'commander';
 import { ConfigManager } from '../config/manager.js';
-import { resolveProvider } from './router.js';
 
 /**
  * Base class for all CLI commands
@@ -20,7 +19,8 @@ export abstract class BaseCommand {
   /**
    * Get the provider from CLI options
    */
-  protected getProvider(options: { provider?: string; model?: string }) {
+  protected async getProvider(options: { provider?: string; model?: string }) {
+    const { resolveProvider } = await import('./router.js');
     return resolveProvider(this.configManager, options.provider);
   }
 }
