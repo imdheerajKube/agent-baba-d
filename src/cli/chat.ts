@@ -15,6 +15,7 @@ import {
   CATEGORY_INFO,
   categorizeModel,
   getModelBadge,
+  formatModelName,
 } from '../inference/model-catalog.js';
 
 /**
@@ -469,7 +470,8 @@ export class ChatCommand extends BaseCommand {
           badge: choice.badge,
         });
         const num = String(displayList.length).padStart(2, ' ');
-        const nameStr = choice.name;
+        const modelId = choice.model;
+        const readableName = formatModelName(modelId);
 
         // Show secondary category tags (except the primary one)
         const secondaryTags = (choice.tags || [])
@@ -482,11 +484,12 @@ export class ChatCommand extends BaseCommand {
           .join(' ');
 
         const tagsStr = secondaryTags ? `  ${secondaryTags}` : '';
+        const readableStr = readableName !== modelId ? `  (${readableName})` : '';
 
         // Show badge inline if available
         const badgeStr = choice.badge ? `  ⭐ ${choice.badge}` : '';
 
-        console.log(`  ${num}. ${choice.providerIcon}  ${nameStr}${tagsStr}${badgeStr}`);
+        console.log(`  ${num}. ${choice.providerIcon}  ${modelId}${readableStr}${tagsStr}${badgeStr}`);
       }
       console.log('');
     }
