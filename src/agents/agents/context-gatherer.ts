@@ -90,19 +90,21 @@ export class ContextGathererAgent extends Agent {
       // 5. Store artifacts in the shared context
       context.artifacts.push(...artifacts);
 
-      const summary = artifacts.length > 0
-        ? `Gathered ${artifacts.length} file${artifacts.length !== 1 ? 's' : ''}`
-        : 'No relevant files found';
-
       const details = artifacts.length > 0
         ? artifacts.map((a) => `  \u{1F4C4} ${a.path}`).join('\n')
         : undefined;
 
-      const overallSuccess = artifacts.length > 0;
+      // Finding no files is a valid outcome (e.g., empty project directory).
+      // The context gatherer should never BLOCK downstream tasks like the writer.
+      // Always return success — the summary communicates what was (or wasn't) found.
+      const resultSummary = artifacts.length > 0
+        ? `Gathered ${artifacts.length} file${artifacts.length !== 1 ? 's' : ''}`
+        : `No relevant files found${errors.length > 0 ? ` (${errors.length} errors while scanning)` : ''}`;
+
       return {
-        success: overallSuccess,
-        summary: overallSuccess ? summary : `Found no relevant files${errors.length > 0 ? ` (${errors.length} errors)` : ''}`,
-        details: overallSuccess ? details : undefined,
+        success: true,
+        summary: resultSummary,
+        details,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

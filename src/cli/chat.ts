@@ -8,12 +8,103 @@ import { getCache } from '../context/cache.js';
 import { logger } from '../utils/logger.js';
 import { ProviderType } from '../config/types.js';
 import { InferenceProvider } from '../inference/interface.js';
+import { Orchestrator } from '../agents/orchestrator.js';
+import { printOrchestrationResult } from './execute.js';
+
+/**
+ * Patterns that indicate a user wants to CREATE or MODIFY files on disk
+ * (as opposed to just asking a conversational question).
+ *
+ * When the user's message matches these patterns, the chat will offer to
+ * switch to "developer mode" — which runs the full multi-agent pipeline
+ * to actually create the files in the project directory.
+ */
+const CREATION_PATTERNS = [
+  /\b(?:create|write|make|build|generate|implement|scaffold)\b.*\b(?:file|program|script|app|function|class|module|component|page|route|api|endpoint|service|cli|tool|package|library|project)\b/i,
+  /\b(?:add|create|write|make)\b.*\b(?:new)\b.*\b(?:file|function|class|feature)\b/i,
+  /\b(?:set\s*up|scaffold|bootstrap|init|start)\b.*\b(?:project|app|module|package)\b/i,
+  /\b(?:create|write)\b.*\bpython|javascript|typescript|go|rust|java|ruby|bash|shell|node\b.*\b(?:program|script|file)\b/i,
+  /^\s*(?:create|write|make|build|generate)\s+(?:a|an|the)\s+/i,
+];
+
+/**
+ * Check if a user message looks like a file-creation request.
+ */
+function hasCreationIntent(message: string): boolean {
+  return CREATION_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/**
+ * Prompt the user whether they want to switch to developer mode.
+ * Returns true if they want to proceed with file creation.
+ */
+async function promptDeveloperMode(message: string): Promise<boolean> {
+  console.log('');
+  logger.info('💡 I noticed you\'re asking me to create something!');
+  logger.info('   I can either:');
+  logger.info('     1. 💬  Just show you the code as text (chat mode)');
+  logger.info('     2. 🏗️  Actually create the files in your project (developer mode)');
+  console.log('');
+
+  const answer = await inquirer.prompt<{ choice: string }>([
+    {
+      type: 'list',
+      name: 'choice',
+      message: 'How would you like me to handle this?',
+      prefix: '🔧',
+      choices: [
+        { name: '🏗️  Developer mode — Create the files in my project directory', value: 'dev' },
+        { name: '💬  Chat mode — Just show me the code as text', value: 'chat' },
+      ],
+    },
+  ]);
+
+  console.log('');
+  return answer.choice === 'dev';
+}
+
+/**
+ * Execute the multi-agent pipeline for a user's goal.
+ * Returns true if the execution completed (for flow control).
+ */
+async function runDeveloperMode(
+  goal: string,
+  configManager: any,
+  options?: { provider?: string; model?: string },
+): Promise<void> {
+  const spinner = ora({
+    text: 'Planning...',
+    spinner: 'dots',
+  }).start();
+
+  try {
+    const orchestrator = new Orchestrator(configManager);
+    const result = await orchestrator.execute(goal, {
+      provider: options?.provider,
+      model: options?.model,
+      verbose: true,
+    });
+
+    spinner.stop();
+    console.log('');
+    printOrchestrationResult(result);
+  } catch (err) {
+    spinner.fail('Developer mode execution failed');
+    logger.error(String(err));
+  }
+}
 
 /**
  * Chat command — interactive conversation with AI
  * buff chat [--provider local] [--model llama2]
+ *
+ * When the user asks to create files, the chat automatically offers to
+ * switch to developer mode (execute pipeline) for direct file creation.
  */
 export class ChatCommand extends BaseCommand {
+  /** Tracks whether /dev mode is active (auto-runs orchestrator for all messages) */
+  private devModeAuto = false;
+
   create(): Command {
     const command = new Command('chat')
       .description('Start an interactive chat session with AI')
@@ -22,14 +113,15 @@ export class ChatCommand extends BaseCommand {
       .option('-p, --provider <provider>', 'Inference provider')
       .option('-m, --model <model>', 'Model to use (if omitted, an interactive picker will appear)')
       .option('--no-cache', 'Disable response caching')
-      .action(async (prompt?: string, options?: { file?: string; provider?: string; model?: string; cache?: boolean }) => {
+      .option('-d, --dev', 'Skip the prompt and always use developer mode for creation requests', false)
+      .action(async (prompt?: string, options?: { file?: string; provider?: string; model?: string; cache?: boolean; dev?: boolean }) => {
         await this.execute(prompt, options || {});
       });
 
     return command;
   }
 
-  private async execute(prompt?: string, options?: { file?: string; provider?: string; model?: string; cache?: boolean }): Promise<void> {
+  private async execute(prompt?: string, options?: { file?: string; provider?: string; model?: string; cache?: boolean; dev?: boolean }): Promise<void> {
     let { type, provider } = await this.getProvider(options || {});
     let model = options?.model;
 
@@ -57,21 +149,33 @@ export class ChatCommand extends BaseCommand {
     // Determine if caching is enabled (default: enabled, disabled with --no-cache)
     const cacheEnabled = options?.cache !== false;
 
-    // If prompt is provided directly, run one-shot
+    // ── One-shot mode ───────────────────────────────────────────────────
     if (prompt) {
+      // Check for creation intent
+      if (options?.dev || hasCreationIntent(prompt)) {
+        const proceed = options?.dev || await promptDeveloperMode(prompt);
+        if (proceed) {
+          await runDeveloperMode(prompt, this.configManager, { provider: type, model });
+          return;
+        }
+      }
+
+      // Normal chat response
       const result = await this.generateWithContext(provider, prompt, type, { ...options, model }, cacheEnabled);
       console.log('\n' + result);
       return;
     }
 
-    // Interactive mode
+    // ── Interactive mode ─────────────────────────────────────────────────
     logger.highlight(`\n🧠 Buff Chat — ${provider.name}`);
     if (model) {
       logger.info(`Model: ${model}`);
     }
-    logger.info(`Type your messages, or /help for commands, /exit to quit.\n`);
+    logger.info(`Type your messages, or /help for commands, /exit to quit.`);
+    logger.info(`💡 Tip: Ask me to "create" something and I'll offer to switch to developer mode!\n`);
 
     const history: Array<{ role: string; content: string }> = [];
+    this.devModeAuto = false; // Reset /dev toggle on each chat session
 
     while (true) {
       const answers = await inquirer.prompt<{ message: string }>([
@@ -90,6 +194,29 @@ export class ChatCommand extends BaseCommand {
       if (message.startsWith('/')) {
         if (this.handleCommand(message, provider, model)) break;
         continue;
+      }
+
+      // ── Check for creation intent ─────────────────────────────────────
+      if (hasCreationIntent(message) || this.devModeAuto) {
+        const proceed = this.devModeAuto || await promptDeveloperMode(message);
+        if (proceed) {
+          await runDeveloperMode(message, this.configManager, { provider: type, model });
+          // After developer mode completes, ask if they want to continue chatting
+          const continueAnswer = await inquirer.prompt<{ cont: string }>([
+            {
+              type: 'input',
+              name: 'cont',
+              message: 'Press Enter to continue chatting, or type /exit to quit:',
+              prefix: '',
+            },
+          ]);
+          if (continueAnswer.cont.trim().toLowerCase() === '/exit' || continueAnswer.cont.trim().toLowerCase() === '/quit') {
+            console.log('Goodbye!');
+            break;
+          }
+          continue;
+        }
+        // User chose chat mode — fall through to normal LLM response
       }
 
       history.push({ role: 'user', content: message });
@@ -115,7 +242,7 @@ export class ChatCommand extends BaseCommand {
 
       // Use streaming when available
       if (typeof provider.generateStream === 'function') {
-        console.log(); // Newline before response
+        console.log();
         try {
           const result = await provider.generateStream(
             fullPrompt,
@@ -126,18 +253,16 @@ export class ChatCommand extends BaseCommand {
           );
           console.log('\n');
 
-          // Cache the result if caching is enabled
           if (cacheEnabled) {
             await cache.set(message, result, effectiveModel, type);
           }
 
           history.push({ role: 'assistant', content: result });
         } catch (err) {
-          console.log(); // Newline after error
+          console.log();
           logger.error(String(err));
         }
       } else {
-        // Fallback: non-streaming with spinner
         const spinner = ora('Thinking...').start();
         try {
           const result = await provider.generate(fullPrompt, { ...options, model: effectiveModel });
@@ -160,14 +285,8 @@ export class ChatCommand extends BaseCommand {
   /**
    * Show a cross-platform numbered menu that discovers available providers
    * and lets the user choose a model before starting the chat.
-   *
-   * Uses a numbered prompt (not inquirer list) for:
-   * - Cross-platform compatibility (Windows, macOS, Linux)
-   * - Better accessibility (numbered selection, no arrow keys)
-   * - Non-TTY environments (piped input, CI)
    */
   private async showModelPicker(): Promise<{ provider: string; model: string } | null> {
-    // Step 1: Check ALL providers in parallel
     logger.highlight('\n🔍 Checking available providers...\n');
 
     const providerIcons: Record<string, string> = {
@@ -188,7 +307,6 @@ export class ChatCommand extends BaseCommand {
 
     const providerTypes: ProviderType[] = ['local', 'nim', 'gemini', 'openrouter', 'groq'];
 
-    // Check all provider availability concurrently
     const checkResults = await Promise.all(
       providerTypes.map(async (pt) => {
         const resolved = resolveProvider(this.configManager, pt);
@@ -197,7 +315,6 @@ export class ChatCommand extends BaseCommand {
       })
     );
 
-    // Collect available providers
     const availableProviders: Array<{ type: ProviderType; provider: InferenceProvider; name: string }> = [];
 
     for (const { pt, resolved, available } of checkResults) {
@@ -221,7 +338,6 @@ export class ChatCommand extends BaseCommand {
       return null;
     }
 
-    // Step 2: Fetch models from ALL available providers in parallel
     logger.highlight('\n📡 Fetching available models...\n');
 
     const loadingSpinner = ora('  Loading models...').start();
@@ -234,7 +350,6 @@ export class ChatCommand extends BaseCommand {
 
     const modelChoices: ModelChoice[] = [];
 
-    // Fetch all models in parallel
     const modelResults = await Promise.all(
       availableProviders.map(async ({ type, provider: prov, name }) => {
         try {
@@ -261,7 +376,6 @@ export class ChatCommand extends BaseCommand {
 
       logger.success(`  ✅ ${name}: ${models.length} model${models.length !== 1 ? 's' : ''} available`);
 
-      // Show up to 15 models per provider
       const MAX_MODELS_PER_PROVIDER = 15;
       const modelsToShow = models.slice(0, MAX_MODELS_PER_PROVIDER);
 
@@ -282,7 +396,6 @@ export class ChatCommand extends BaseCommand {
       return null;
     }
 
-    // Step 3: Display numbered menu and ask user to pick
     console.log();
     logger.highlight('🎯  Available Models\n');
 
@@ -314,7 +427,6 @@ export class ChatCommand extends BaseCommand {
 
     const selectedIndex = parseInt(answer.selected.trim(), 10);
 
-    // Handle cancel (0)
     if (selectedIndex === 0) {
       logger.info('\nModel selection cancelled.');
       return null;
@@ -322,7 +434,6 @@ export class ChatCommand extends BaseCommand {
 
     const selected = modelChoices[selectedIndex - 1];
 
-    // Separate picker output from chat for a clean start
     console.log('\n'.repeat(2));
 
     const providerName = availableProviders.find(p => p.type === selected.provider)?.name || selected.provider;
@@ -348,6 +459,7 @@ Commands:
   /clear        Clear conversation history
   /info         Show provider & model info
   /help         Show this help
+  /dev          Switch to developer mode for your next prompt
         `.trim());
         break;
       case '/clear':
@@ -355,6 +467,14 @@ Commands:
         break;
       case '/info':
         console.log(`\n${provider.getInfo()}${model ? `\n  Model: ${model}` : ''}\n`);
+        break;
+      case '/dev':
+        this.devModeAuto = !this.devModeAuto;
+        if (this.devModeAuto) {
+          logger.success('✅ Developer mode ACTIVATED — all messages will auto-create files.');
+        } else {
+          logger.info('ℹ️  Developer mode DEACTIVATED — creation requests will ask for confirmation.');
+        }
         break;
       default:
         console.log(`Unknown command: ${cmd}. Type /help`);
@@ -381,7 +501,6 @@ Commands:
       fullPrompt = `${contextStr}\n\n## User Query\n${prompt}`;
     }
 
-    // Use streaming when available (silently collect, caller handles display)
     if (typeof provider.generateStream === 'function') {
       const chunks: string[] = [];
       await provider.generateStream(
@@ -394,7 +513,6 @@ Commands:
       return chunks.join('');
     }
 
-    // Fallback: non-streaming with spinner
     const spinner = ora(`Generating with ${provider.name}...`).start();
 
     try {
