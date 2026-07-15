@@ -24,9 +24,9 @@ function createTestConfigManager(): ConfigManager {
 // ─── Template Definitions ───────────────────────────────────────────────────
 
 describe('getWorkflowTemplates', () => {
-  it('should return all 3 built-in templates', () => {
+  it('should return all 4 built-in templates', () => {
     const templates = getWorkflowTemplates();
-    expect(templates).toHaveLength(3);
+    expect(templates).toHaveLength(4);
   });
 
   it('should return a new array each time (shallow copy)', () => {
@@ -38,9 +38,9 @@ describe('getWorkflowTemplates', () => {
     expect(first[0]).toBe(second[0]);
   });
 
-  it('should contain quick-fix, feature-implement, and publish-release', () => {
+  it('should contain quick-fix, create-and-run, feature-implement, and publish-release', () => {
     const ids = getWorkflowTemplates().map((t) => t.id).sort();
-    expect(ids).toEqual(['feature-implement', 'publish-release', 'quick-fix']);
+    expect(ids).toEqual(['create-and-run', 'feature-implement', 'publish-release', 'quick-fix']);
   });
 });
 
@@ -57,6 +57,13 @@ describe('getWorkflowTemplate', () => {
     expect(t).toBeDefined();
     expect(t!.id).toBe('feature-implement');
     expect(t!.name).toBe('Feature Implementation');
+  });
+
+  it('should return the create-and-run template by ID', () => {
+    const t = getWorkflowTemplate('create-and-run');
+    expect(t).toBeDefined();
+    expect(t!.id).toBe('create-and-run');
+    expect(t!.name).toBe('Create & Run');
   });
 
   it('should return the publish-release template by ID', () => {
@@ -92,12 +99,13 @@ describe('quick-fix template structure', () => {
     expect(template.steps.length).toBeGreaterThan(0);
   });
 
-  it('should have 4 steps: context-gatherer → writer → reviewer → security', () => {
-    expect(template.steps).toHaveLength(4);
+  it('should have 5 steps: context-gatherer → writer → runner → reviewer → security', () => {
+    expect(template.steps).toHaveLength(5);
     expect(template.steps[0].agentType).toBe('context-gatherer');
     expect(template.steps[1].agentType).toBe('writer');
-    expect(template.steps[2].agentType).toBe('reviewer');
-    expect(template.steps[3].agentType).toBe('security');
+    expect(template.steps[2].agentType).toBe('runner');
+    expect(template.steps[3].agentType).toBe('reviewer');
+    expect(template.steps[4].agentType).toBe('security');
   });
 
   it('should have correct dependency chain (each step depends on previous)', () => {
@@ -105,6 +113,7 @@ describe('quick-fix template structure', () => {
     expect(template.steps[1].dependsOn).toEqual(['step-0']);
     expect(template.steps[2].dependsOn).toEqual(['step-1']);
     expect(template.steps[3].dependsOn).toEqual(['step-2']);
+    expect(template.steps[4].dependsOn).toEqual(['step-3']);
   });
 
   it('should have recommendedModels for context-gatherer, writer, and reviewer (security is rule-based)', () => {
@@ -127,8 +136,8 @@ describe('feature-implement template structure', () => {
     template = getWorkflowTemplate('feature-implement')!;
   });
 
-  it('should have 6 steps (security added as final validation)', () => {
-    expect(template.steps).toHaveLength(6);
+  it('should have 7 steps (runner added after writer for verification)', () => {
+    expect(template.steps).toHaveLength(7);
   });
 
   it('should have correct agent types in order', () => {
@@ -138,6 +147,7 @@ describe('feature-implement template structure', () => {
       'context-gatherer',
       'writer',
       'tester',
+      'runner',
       'reviewer',
       'security',
     ]);
@@ -149,10 +159,11 @@ describe('feature-implement template structure', () => {
     expect(template.steps[2].dependsOn).toEqual(['step-1']);
   });
 
-  it('should have tester AND reviewer both depend on the writer (step-2), security on reviewer (step-4)', () => {
-    expect(template.steps[3].dependsOn).toEqual(['step-2']);
-    expect(template.steps[4].dependsOn).toEqual(['step-2']);
-    expect(template.steps[5].dependsOn).toEqual(['step-4']);
+  it('should have tester, runner, AND reviewer all depend on writer (step-2), security on reviewer (step-5)', () => {
+    expect(template.steps[3].dependsOn).toEqual(['step-2']); // tester
+    expect(template.steps[4].dependsOn).toEqual(['step-2']); // runner
+    expect(template.steps[5].dependsOn).toEqual(['step-2']); // reviewer
+    expect(template.steps[6].dependsOn).toEqual(['step-5']); // security
   });
 
   it('should have recommendedModels with 5 entries (security is rule-based, no LLM needed)', () => {
@@ -162,6 +173,33 @@ describe('feature-implement template structure', () => {
 
   it('should enable memory', () => {
     expect(template.useMemory).toBe(true);
+  });
+});
+
+describe('create-and-run template structure', () => {
+  let template: WorkflowTemplate;
+
+  beforeEach(() => {
+    template = getWorkflowTemplate('create-and-run')!;
+  });
+
+  it('should have 3 steps: writer → runner → reviewer', () => {
+    expect(template.steps).toHaveLength(3);
+    expect(template.steps[0].agentType).toBe('writer');
+    expect(template.steps[1].agentType).toBe('runner');
+    expect(template.steps[2].agentType).toBe('reviewer');
+  });
+
+  it('should have sequential dependencies', () => {
+    expect(template.steps[0].dependsOn).toEqual([]);
+    expect(template.steps[1].dependsOn).toEqual(['step-0']);
+    expect(template.steps[2].dependsOn).toEqual(['step-1']);
+  });
+
+  it('should only have recommendedModels for writer (runner/reviewer use defaults)', () => {
+    expect(template.recommendedModels).toBeDefined();
+    expect(Object.keys(template.recommendedModels!)).toHaveLength(1);
+    expect(template.recommendedModels!.writer).toBeTruthy();
   });
 });
 
@@ -251,7 +289,7 @@ describe('buildTaskPlanFromTemplate', () => {
     const template = getWorkflowTemplate('quick-fix')!;
     const plan = buildTaskPlanFromTemplate(template, goal);
 
-    expect(plan).toHaveLength(4);
+    expect(plan).toHaveLength(5); // quick-fix now has 5 steps
     plan.forEach((step, i) => {
       expect(step.id).toBe(`step-${i}`);
     });
@@ -282,8 +320,9 @@ describe('buildTaskPlanFromTemplate', () => {
     expect(plan[1].dependsOn).toEqual(['step-0']);
     expect(plan[2].dependsOn).toEqual(['step-1']);
     expect(plan[3].dependsOn).toEqual(['step-2']); // tester
-    expect(plan[4].dependsOn).toEqual(['step-2']); // reviewer (same dep)
-    expect(plan[5].dependsOn).toEqual(['step-4']); // security depends on reviewer
+    expect(plan[4].dependsOn).toEqual(['step-2']); // runner (same dep as tester)
+    expect(plan[5].dependsOn).toEqual(['step-2']); // reviewer (same dep)
+    expect(plan[6].dependsOn).toEqual(['step-5']); // security depends on reviewer
   });
 
   it('should set status to pending for all 7 steps', () => {
@@ -303,6 +342,7 @@ describe('buildTaskPlanFromTemplate', () => {
     expect(plan.map((s) => s.agentType)).toEqual([
       'context-gatherer',
       'writer',
+      'runner',
       'reviewer',
       'security',
     ]);
@@ -312,7 +352,7 @@ describe('buildTaskPlanFromTemplate', () => {
     const template = getWorkflowTemplate('quick-fix')!;
     const plan = buildTaskPlanFromTemplate(template, '');
 
-    expect(plan).toHaveLength(4);
+    expect(plan).toHaveLength(5);
     expect(plan[0].description).toContain('for:');
   });
 
@@ -334,16 +374,20 @@ describe('buildTaskPlanFromTemplate', () => {
 
   it('should produce a different plan for each template', () => {
     const qf = buildTaskPlanFromTemplate(getWorkflowTemplate('quick-fix')!, 'x');
+    const cr = buildTaskPlanFromTemplate(getWorkflowTemplate('create-and-run')!, 'x');
     const fi = buildTaskPlanFromTemplate(getWorkflowTemplate('feature-implement')!, 'x');
     const pr = buildTaskPlanFromTemplate(getWorkflowTemplate('publish-release')!, 'x');
 
-    expect(qf).toHaveLength(4);
-    expect(fi).toHaveLength(6);
+    expect(qf).toHaveLength(5);
+    expect(cr).toHaveLength(3);
+    expect(fi).toHaveLength(7);
     expect(pr).toHaveLength(7);
 
     expect(qf[0].agentType).toBe('context-gatherer');
-    expect(qf[3].agentType).toBe('security');
-    expect(fi[5].agentType).toBe('security');
+    expect(qf[4].agentType).toBe('security');
+    expect(cr[0].agentType).toBe('writer');
+    expect(cr[1].agentType).toBe('runner');
+    expect(fi[6].agentType).toBe('security');
     expect(pr[0].agentType).toBe('tester');
     expect(pr[3].agentType).toBe('security');
     expect(pr[6].agentType).toBe('github-release');

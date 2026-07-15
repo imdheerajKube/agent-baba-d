@@ -46,8 +46,15 @@ INCORRECT (do NOT use these):
 - If you modify multiple files, return ONE code block per file
 `;
 
-/** Maximum files to include in a single writer prompt (reduced to avoid token limits) */
-const MAX_CONTEXT_FILES = 2;
+/** Maximum files to include in a single writer prompt */
+const MAX_CONTEXT_FILES = 10;
+
+/**
+ * Maximum total characters across all files sent to the LLM.
+ * 16,000 chars ≈ 4,000 tokens — leaves room for the rest of the prompt and response.
+ * Files are prioritized: smaller files first, larger files are trunkated if over budget.
+ */
+const MAX_CONTEXT_CHARS = 16_000;
 
 /** Maximum number of API retry attempts for transient LLM failures (rate limits, timeouts, etc.) */
 const MAX_API_RETRIES = 2;
@@ -144,7 +151,7 @@ export class WriterAgent extends Agent {
 
     const response = await callLLM(prompt, {
       temperature: isRetry ? 0.1 : 0.3, // Lower temperature for retry
-      maxTokens: 8192,
+      maxTokens: 2048,
     });
 
     // ── Verbose logging: capture what the LLM actually returned ──────
@@ -208,24 +215,18 @@ export class WriterAgent extends Agent {
     );
     const taskDescription = writerTask?.description || context.goal;
 
-    // Limit the number of files sent to the LLM to avoid token limits
-    const filesToSend = context.artifacts.slice(0, MAX_CONTEXT_FILES);
-    const totalFiles = context.artifacts.length;
+    // Use token-budget-aware file selection: show as many files as possible
+    // within MAX_CONTEXT_CHARS, prioritizing smaller files to max context.
+    const filesToSend = this.selectFilesWithinBudget(context.artifacts, MAX_CONTEXT_CHARS);
 
     const fileContext = filesToSend.length > 0
       ? filesToSend
-          .map((a) => {
-            // Truncate very large files to reduce token usage
-            const maxLines = 60;
-            const lines = a.content.split('\n');
-            const truncated = lines.length > maxLines
-              ? lines.slice(0, maxLines).join('\n') + `\n// ... (${lines.length - maxLines} more lines truncated)`
-              : a.content;
-            return `--- ${a.path} ---\n${truncated}`;
-          })
+          .map(({ artifact, truncated }) =>
+            `--- ${artifact.path} ---${truncated ? ` (truncated, ${artifact.content.length}→${truncated.length} chars)` : ''}\n${truncated || artifact.content}`
+          )
           .join('\n\n') +
-        (totalFiles > MAX_CONTEXT_FILES
-          ? `\n\n... and ${totalFiles - MAX_CONTEXT_FILES} more files in the project`
+        (context.artifacts.length > filesToSend.length
+          ? `\n\n... and ${context.artifacts.length - filesToSend.length} more files in the project (excluded to fit token budget)`
           : '')
       : '(No files found in context — you may need to create new files)';
 
@@ -271,6 +272,54 @@ export class WriterAgent extends Agent {
     }
 
     return changes;
+  }
+
+  /**
+   * Select files within the given character budget.
+   * Prioritizes smaller files first so the LLM sees as much complete context as possible.
+   * Larger files are truncated to fit within the remaining budget.
+   */
+  private selectFilesWithinBudget(
+    artifacts: import('../agent.js').Artifact[],
+    budget: number,
+  ): Array<{ artifact: import('../agent.js').Artifact; truncated: string | null }> {
+    // Sort by size ascending (smallest first)
+    const sorted = [...artifacts]
+      .map((a) => ({ artifact: a, size: a.content.length }))
+      .sort((a, b) => a.size - b.size);
+
+    const result: Array<{ artifact: import('../agent.js').Artifact; truncated: string | null }> = [];
+    let used = 0;
+
+    // Track overhead per file (header lines like "--- path.ts ---\n")
+    const OVERHEAD_PER_FILE = 50;
+
+    for (const { artifact, size } of sorted) {
+      if (result.length >= MAX_CONTEXT_FILES) break;
+
+      const totalNeeded = size + OVERHEAD_PER_FILE;
+
+      if (used + totalNeeded <= budget) {
+        // File fits entirely
+        result.push({ artifact, truncated: null });
+        used += totalNeeded;
+      } else if (used + OVERHEAD_PER_FILE < budget) {
+        // File doesn't fit entirely, but we can show a truncated version
+        const remaining = budget - used - OVERHEAD_PER_FILE;
+        if (remaining > 200) {
+          // Only include if we can show at least 200 meaningful chars
+          const truncated = artifact.content.slice(0, remaining);
+          result.push({ artifact, truncated });
+          used = budget; // Budget exhausted
+        }
+        break;
+      } else {
+        // No budget left
+        break;
+      }
+    }
+
+    return result;
   }
 
   /**

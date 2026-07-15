@@ -3,60 +3,91 @@
  * execution plan consisting of TaskSteps for other agents to execute.
  *
  * The planner is the first agent to run in every orchestration session.
+ * It now receives the project file tree (injected by the Orchestrator via
+ * context.metadata.projectFileTree) so it can make informed decisions about
+ * which files to create, modify, or reference in its plan.
  */
 
 import { Agent, type AgentContext, type AgentResult, type TaskStep } from '../agent.js';
 import type { LLMCallFn } from '../agent.js';
 
-const PLANNER_SYSTEM_PROMPT = `You are a senior software architect. Your job is to decompose a user's goal into a detailed, ordered execution plan.
-
-For each step, specify:
-- id: A short unique identifier (e.g., "step-01-gather-context")
-- description: What needs to be done in clear language
-- agentType: One of "context-gatherer", "writer", "reviewer", "tester", "debugger"
-- dependsOn: Array of step IDs that must complete before this one (empty array for first steps)
-
-Rules:
-1. Start with a "context-gatherer" step to understand the codebase
-2. Add one or more "writer" steps to implement changes
-3. End with a "reviewer" step to validate the work
-4. Set dependsOn correctly so steps run in the right order
-5. Keep steps granular — each step should change at most 2-3 files
-6. Maximum 10 steps total
-
-Return ONLY a valid JSON array. No markdown, no explanations.
-
-Example:
-[
-  {
-    "id": "step-01-understand",
-    "description": "Scan the codebase to understand the current project structure and identify files related to authentication",
-    "agentType": "context-gatherer",
-    "dependsOn": []
-  },
-  {
-    "id": "step-02-add-routes",
-    "description": "Create JWT authentication routes in src/routes/auth.ts with login, register, and refresh endpoints",
-    "agentType": "writer",
-    "dependsOn": ["step-01-understand"]
-  },
-  {
-    "id": "step-03-add-middleware",
-    "description": "Add JWT verification middleware in src/middleware/auth.ts",
-    "agentType": "writer",
-    "dependsOn": ["step-01-understand"]
-  },
-  {
-    "id": "step-04-review",
-    "description": "Review all changes for security vulnerabilities, correctness, and code quality",
-    "agentType": "reviewer",
-    "dependsOn": ["step-02-add-routes", "step-03-add-middleware"]
-  }
-]
-`;
+const PLANNER_SYSTEM_PROMPT = [
+  'You are a senior software architect. Your job is to decompose a user\'s goal into a detailed, ordered execution plan.',
+  '',
+  'For each step, specify:',
+  '- id: A short unique identifier (e.g., "step-01-gather-context")',
+  '- description: What needs to be done in clear language',
+  '- agentType: One of "context-gatherer", "writer", "reviewer", "tester", "debugger", "runner", "security"',
+  '- dependsOn: Array of step IDs that must complete before this one (empty array for first steps)',
+  '',
+  'Rules:',
+  '1. Start with a "context-gatherer" step to understand the codebase (if files exist)',
+  '2. Add one or more "writer" steps to implement changes (max 2-3 files per step)',
+  '3. If the project is EMPTY or the goal is to CREATE something from scratch,',
+  '   skip the context-gatherer step and go straight to writer steps.',
+  '4. For goals that require running something (like "create a Python script and run it"),',
+  '   add a "runner" step AFTER the writer step(s).',
+  '   Use the description to specify the command: "Run: python hello.py" or "Run `npm test`"',
+  '5. End with a "reviewer" step to validate the work',
+  '6. Set dependsOn correctly so steps run in the right order',
+  '7. Keep steps granular — each step should change at most 2-3 files',
+  '8. Maximum 12 steps total',
+  '',
+  'Return ONLY a valid JSON array. No markdown, no explanations.',
+  '',
+  'Example (modifying existing project):',
+  '[',
+  '  {',
+  '    "id": "step-01-understand",',
+  '    "description": "Scan the codebase to understand the current project structure and identify files related to authentication",',
+  '    "agentType": "context-gatherer",',
+  '    "dependsOn": []',
+  '  },',
+  '  {',
+  '    "id": "step-02-add-routes",',
+  '    "description": "Create JWT authentication routes in src/routes/auth.ts with login, register, and refresh endpoints",',
+  '    "agentType": "writer",',
+  '    "dependsOn": ["step-01-understand"]',
+  '  },',
+  '  {',
+  '    "id": "step-03-add-middleware",',
+  '    "description": "Add JWT verification middleware in src/middleware/auth.ts",',
+  '    "agentType": "writer",',
+  '    "dependsOn": ["step-01-understand"]',
+  '  },',
+  '  {',
+  '    "id": "step-04-review",',
+  '    "description": "Review all changes for security vulnerabilities, correctness, and code quality",',
+  '    "agentType": "reviewer",',
+  '    "dependsOn": ["step-02-add-routes", "step-03-add-middleware"]',
+  '  }',
+  ']',
+  '',
+  'Example (creating from scratch + running):',
+  '[',
+  '  {',
+  '    "id": "step-01-create-script",',
+  '    "description": "Create a Python script hello.py that prints Hello, World!",',
+  '    "agentType": "writer",',
+  '    "dependsOn": []',
+  '  },',
+  '  {',
+  '    "id": "step-02-run-script",',
+  '    "description": "Run: python hello.py', '    "agentType": "runner",',
+  '    "dependsOn": ["step-01-create-script"]',
+  '  },',
+  '  {',
+  '    "id": "step-03-review",',
+  '    "description": "Verify the output is correct",',
+  '    "agentType": "reviewer",',
+  '    "dependsOn": ["step-02-run-script"]',
+  '  }',
+  ']',
+].join('\n');
 
 /**
  * PlannerAgent — Decomposes user goals into ordered task plans.
+ * Now accepts `projectFileTree` from context.metadata to make informed plans.
  */
 export class PlannerAgent extends Agent {
   readonly name = 'Planner';
@@ -64,17 +95,45 @@ export class PlannerAgent extends Agent {
 
   async execute(context: AgentContext, callLLM: LLMCallFn): Promise<AgentResult> {
     try {
-      // Check for memory context (retrieved from past similar trajectories)
+      // Check for file tree (injected by Orchestrator) and memory context
+      const fileTree = context.metadata.projectFileTree as string | undefined;
       const memoryContext = context.metadata.memoryContext as string | undefined;
 
-      let prompt = `${PLANNER_SYSTEM_PROMPT}\n\n## User Goal\n${context.goal}\n\n## Working Directory\n${context.workingDirectory}`;
+      const promptParts: string[] = [
+        PLANNER_SYSTEM_PROMPT,
+        '',
+        '## User Goal',
+        context.goal,
+        '',
+        '## Working Directory',
+        context.workingDirectory,
+      ];
+
+      // Inject the project file tree so the planner knows what exists
+      if (fileTree) {
+        const treeLines = fileTree.split('\n').length;
+        promptParts.push(
+          '',
+          '## Current Project Structure',
+          fileTree || '(empty directory — no source files found)',
+          treeLines > 1 ? `\n(${treeLines} files/directories visible)` : ' (empty)',
+        );
+      } else {
+        promptParts.push(
+          '',
+          '## Current Project Structure',
+          '(unknown — file tree not available)',
+        );
+      }
 
       // Append memory/few-shot examples if available
       if (memoryContext) {
-        prompt += `\n\n${memoryContext}`;
+        promptParts.push('', memoryContext);
       }
 
-      prompt += `\n\nCreate an execution plan for this goal. Return ONLY a valid JSON array of task steps.`;
+      promptParts.push('', 'Create an execution plan for this goal. Return ONLY a valid JSON array of task steps.');
+
+      const prompt = promptParts.join('\n');
 
       const response = await callLLM(prompt, {
         temperature: 0.3, // Low temperature for structured output

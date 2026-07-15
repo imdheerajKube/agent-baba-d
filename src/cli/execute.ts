@@ -206,6 +206,14 @@ export function printOrchestrationResult(result: import('../agents/orchestrator.
     }
   }
 
+  // Runner output
+  if (result.runOutput) {
+    console.log(`\n  Command Output:`);
+    for (const line of result.runOutput.split('\n')) {
+      console.log(`    ${line}`);
+    }
+  }
+
   // Error
   if (result.error) {
     console.log(`\n  Error: ${result.error}`);

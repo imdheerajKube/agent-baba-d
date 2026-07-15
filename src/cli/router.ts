@@ -15,6 +15,7 @@ import { ConfigCommand } from './config.js';
 import { CacheCommand } from './cache.js';
 import { ModelsCommand } from './models.js';
 import { ExecuteCommand } from './execute.js';
+import { RunCommand } from './run.js';
 import { WorkflowCommand } from './workflow.js';
 import { PluginsCommand } from './plugins.js';
 import { LearnCommand } from './learn.js';
@@ -51,7 +52,10 @@ export function createCLI(): Command {
   program.addCommand(cacheCmd.create());
   program.addCommand(modelsCmd.create());
   program.addCommand(executeCmd.create());
-  
+
+  const runCmd = new RunCommand();
+  program.addCommand(runCmd.create());
+
   const workflowCmd = new WorkflowCommand();
   program.addCommand(workflowCmd.create());
 

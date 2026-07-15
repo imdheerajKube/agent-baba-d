@@ -6,8 +6,9 @@
  * bypassing the PlannerAgent when a fixed workflow is desired.
  *
  * Built-in templates:
- * - quick-fix: gather context → edit → review (small, fast changes)
+ * - quick-fix: gather context → edit → run → review (small, fast changes)
  * - feature-implement: plan → gather → write → test → review (new features)
+ * - create-and-run: write → run → review (create from scratch + execute)
  * - publish-release: test → build → version → publish (release pipeline)
  */
 
@@ -46,7 +47,7 @@ const BUILTIN_TEMPLATES: WorkflowTemplate[] = [
   {
     id: 'quick-fix',
     name: 'Quick Fix',
-    description: 'Fast context → edit → review for small changes (bug fixes, typos, simple edits)',
+    description: 'Fast context gather \u2192 edit \u2192 run test \u2192 review for small changes (bug fixes, typos, simple edits)',
     steps: [
       {
         agentType: 'context-gatherer',
@@ -59,14 +60,19 @@ const BUILTIN_TEMPLATES: WorkflowTemplate[] = [
         dependsOn: ['step-0'],
       },
       {
+        agentType: 'runner',
+        description: 'Run: npm test (or equivalent verification command) to verify the fix',
+        dependsOn: ['step-1'],
+      },
+      {
         agentType: 'reviewer',
         description: 'Review the fix for correctness and quality',
-        dependsOn: ['step-1'],
+        dependsOn: ['step-2'],
       },
       {
         agentType: 'security',
         description: 'Run all security scans on changes',
-        dependsOn: ['step-2'],
+        dependsOn: ['step-3'],
       },
     ],
     recommendedModels: {
@@ -76,9 +82,34 @@ const BUILTIN_TEMPLATES: WorkflowTemplate[] = [
     },
   },
   {
+    id: 'create-and-run',
+    name: 'Create & Run',
+    description: 'Create a new program/script from scratch, execute it, and show output — perfect for prototyping and scaffolding',
+    steps: [
+      {
+        agentType: 'writer',
+        description: 'Create the program files from scratch based on the goal',
+        dependsOn: [],
+      },
+      {
+        agentType: 'runner',
+        description: 'Run the newly created program and capture output',
+        dependsOn: ['step-0'],
+      },
+      {
+        agentType: 'reviewer',
+        description: 'Review the code quality and correctness of output',
+        dependsOn: ['step-1'],
+      },
+    ],
+    recommendedModels: {
+      writer: 'groq/llama-3.1-8b-instant',
+    },
+  },
+  {
     id: 'feature-implement',
     name: 'Feature Implementation',
-    description: 'Full feature workflow: plan → gather → write → test → review',
+    description: 'Full feature workflow: plan \u2192 gather \u2192 write \u2192 test \u2192 run \u2192 review',
     steps: [
       {
         agentType: 'planner',
@@ -101,6 +132,11 @@ const BUILTIN_TEMPLATES: WorkflowTemplate[] = [
         dependsOn: ['step-2'],
       },
       {
+        agentType: 'runner',
+        description: 'Run the application to verify it starts correctly',
+        dependsOn: ['step-2'],
+      },
+      {
         agentType: 'reviewer',
         description: 'Review the implementation for quality and completeness',
         dependsOn: ['step-2'],
@@ -108,7 +144,7 @@ const BUILTIN_TEMPLATES: WorkflowTemplate[] = [
       {
         agentType: 'security',
         description: 'Run all security scans on changes',
-        dependsOn: ['step-4'],
+        dependsOn: ['step-5'],
       },
     ],
     recommendedModels: {
@@ -123,7 +159,7 @@ const BUILTIN_TEMPLATES: WorkflowTemplate[] = [
   {
     id: 'publish-release',
     name: 'Publish Release',
-    description: 'Full release pipeline: test → version bump → review → commit → build&publish → github release',
+    description: 'Full release pipeline: test \u2192 version bump \u2192 review \u2192 commit \u2192 build&publish \u2192 github release',
     steps: [
       {
         agentType: 'tester',

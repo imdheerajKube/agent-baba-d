@@ -6,6 +6,7 @@ import { setLogLevel } from './utils/logger.js';
 // ─── Agent exports (public API) ─────────────────────────────────────────────
 export { Orchestrator } from './agents/orchestrator.js';
 export type { OrchestratorOptions, OrchestrationResult } from './agents/orchestrator.js';
+export { buildProjectFileTree, truncateTree } from './agents/utils/file-tree.js';
 export { ContextVault } from './agents/context-vault.js';
 export { Agent } from './agents/agent.js';
 export type {
@@ -24,6 +25,8 @@ export { ReviewerAgent } from './agents/agents/reviewer.js';
 export { TesterAgent, cleanupSandbox } from './agents/agents/tester.js';
 export type { TestResult } from './agents/agents/tester.js';
 export { DebuggerAgent } from './agents/agents/debugger.js';
+export { RunnerAgent } from './agents/agents/runner.js';
+export type { RunResult } from './agents/agents/runner.js';
 export { GitHubReleaseAgent } from './agents/agents/github-release-agent.js';
 export { SecurityAgent } from './agents/agents/security-agent.js';
 export { runAllScans, scanForPII, scanForInjections, scanForDangerousCode, formatScanReport } from './security/scanner.js';

@@ -47,44 +47,44 @@ describe('WriterAgent — buildPrompt', () => {
     return (writer as any).buildPrompt.call(writer, context, isRetry);
   }
 
-  // ── File Count Limit ──────────────────────────────────────────────────
+  // ── File Count Limit (now token-budget-aware, up to 10 files) ────────
 
-  it('should limit to 2 files (MAX_CONTEXT_FILES)', () => {
+  it('should include multiple files within token budget (up to MAX_CONTEXT_FILES=10)', () => {
     const context = makeContext({
       artifacts: [
         makeArtifact('src/a.ts', 'content a'),
         makeArtifact('src/b.ts', 'content b'),
-        makeArtifact('src/c.ts', 'content c'), // Third file — should be excluded
+        makeArtifact('src/c.ts', 'content c'),
       ],
     });
 
     const prompt = buildPrompt(context);
 
-    // Should include a.ts and b.ts
+    // All 3 small files should be included (total 33 chars << budget)
     expect(prompt).toContain('src/a.ts');
     expect(prompt).toContain('src/b.ts');
-    // Should NOT include the third file's path or content
-    expect(prompt).not.toContain('src/c.ts');
-    // Should note that files were truncated
-    expect(prompt).toContain('and 1 more files in the project');
+    expect(prompt).toContain('src/c.ts');
+    // No "more files" message since all files fit
+    expect(prompt).not.toContain('more files in the project');
   });
 
-  it('should include up to 2 files and note multiple omitted', () => {
+  it('should exclude files when total exceeds token budget, prioritizing smaller files', () => {
+    // Create 5 files where small ones fit but large ones don't
     const context = makeContext({
-      artifacts: Array.from({ length: 5 }, (_, i) =>
-        makeArtifact(`src/file${i}.ts`, `content ${i}`),
-      ),
+      artifacts: [
+        makeArtifact('src/tiny.ts', 'tiny'),
+        makeArtifact('src/small.ts', 'a'.repeat(1000)),
+        makeArtifact('src/large.ts', 'b'.repeat(18000)), // 18K chars (>16K budget) — should be truncated
+      ],
     });
 
     const prompt = buildPrompt(context);
 
-    // First 2 files included
-    expect(prompt).toContain('src/file0.ts');
-    expect(prompt).toContain('src/file1.ts');
-    // Last file excluded
-    expect(prompt).not.toContain('content 4');
-    // Shows count of omitted files
-    expect(prompt).toContain('and 3 more files in the project');
+    // Small files should be included
+    expect(prompt).toContain('src/tiny.ts');
+    expect(prompt).toContain('src/small.ts');
+    // The large file exceeds budget — should be truncated or excluded
+    expect(prompt).not.toContain('b'.repeat(18000));
   });
 
   // ── Single file ──────────────────────────────────────────────────────
@@ -178,36 +178,36 @@ describe('WriterAgent — buildPrompt', () => {
     expect(prompt).not.toContain('previous response could not be parsed');
   });
 
-  // ── File Truncation ──────────────────────────────────────────────────
+  // ── Token-Budget-Aware Truncation ────────────────────────────────────
 
-  it('should truncate files longer than 60 lines', () => {
-    const longContent = Array.from({ length: 70 }, (_, i) => `line ${i}`).join('\n');
+  it('should show truncation marker when file is truncated to fit budget', () => {
+    // Create one very large file that exceeds the character budget
+    const hugeContent = 'x'.repeat(18000); // 18K chars > 16K budget
     const context = makeContext({
-      artifacts: [makeArtifact('src/long.ts', longContent)],
+      artifacts: [makeArtifact('src/huge.ts', hugeContent)],
     });
 
     const prompt = buildPrompt(context);
 
-    // Should include first 60 lines
-    expect(prompt).toContain('line 0');
-    expect(prompt).toContain('line 59');
-    // Should skip line 60+
-    expect(prompt).not.toContain('line 60');
-    // Should show truncation note
-    expect(prompt).toContain('10 more lines truncated');
+    // Should show a truncated marker
+    expect(prompt).toContain('(truncated');
+    // Should include at least some content
+    expect(prompt).toContain('src/huge.ts');
+    // Should NOT include the full content
+    expect(prompt).not.toContain('x'.repeat(18000));
   });
 
-  it('should NOT truncate files shorter than 60 lines', () => {
-    const shortContent = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n');
+  it('should NOT truncate small files that fit entirely within budget', () => {
+    const shortContent = 'hello world\nline 2\nline 3';
     const context = makeContext({
       artifacts: [makeArtifact('src/short.ts', shortContent)],
     });
 
     const prompt = buildPrompt(context);
 
-    expect(prompt).toContain('line 0');
-    expect(prompt).toContain('line 29');
-    expect(prompt).not.toContain('more lines truncated');
+    expect(prompt).toContain('hello world');
+    expect(prompt).toContain('line 3');
+    expect(prompt).not.toContain('(truncated');
   });
 
   // ── File Content Format ──────────────────────────────────────────────
