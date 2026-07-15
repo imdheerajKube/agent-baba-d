@@ -109,7 +109,7 @@ describe('GitHubReleaseAgent detectVersion', () => {
     // Our project has a package.json with version "1.4.1"
     const ctx = createContext({ workingDirectory: process.cwd() });
 
-    expect(method('Create a release', ctx)).toBe('1.7.0');
+    expect(method('Create a release', ctx)).toBe('1.7.1');
   });
 
   it('should fall back to git tags when package.json has no version', () => {

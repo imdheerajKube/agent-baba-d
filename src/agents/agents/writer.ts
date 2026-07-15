@@ -59,8 +59,49 @@ const MAX_CONTEXT_CHARS = 16_000;
 /** Maximum number of API retry attempts for transient LLM failures (rate limits, timeouts, etc.) */
 const MAX_API_RETRIES = 2;
 
-/** Base delay for exponential backoff in milliseconds (doubles each retry: 1s, 2s) */
-const BASE_RETRY_DELAY_MS = 1000;
+/** Base delay for exponential backoff in milliseconds (doubles each retry: 5s, 10s) */
+const BASE_RETRY_DELAY_MS = 5000;
+
+/**
+ * Parse the "try again in Xs" hint from a rate-limit error response.
+ * Supports formats: "try again in 10.49s", "try again in 5000ms"
+ * Returns the suggested wait time in ms, or falls back to exponential backoff.
+ */
+function parseRetryAfterHint(errorMessage: string): number | null {
+  // Match patterns like: "try again in 10.49s" or "try again in 5000ms"
+  const secondMatch = errorMessage.match(/try again in ([\d.]+)s/i);
+  if (secondMatch) {
+    const seconds = parseFloat(secondMatch[1]);
+    if (!isNaN(seconds) && seconds > 0) {
+      // Add 1s padding to ensure the window fully resets
+      return Math.ceil(seconds * 1000) + 1000;
+    }
+  }
+
+  const msMatch = errorMessage.match(/try again in (\d+)ms/i);
+  if (msMatch) {
+    const ms = parseInt(msMatch[1], 10);
+    if (!isNaN(ms) && ms > 0) {
+      return ms + 1000;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Calculate the retry delay for a given attempt.
+ * If the error message contains a "try again in Xs" hint, use that.
+ * Otherwise, fall back to exponential backoff with BASE_RETRY_DELAY_MS.
+ */
+function calculateRetryDelay(attempt: number, errorMessage: string): number {
+  const hintDelay = parseRetryAfterHint(errorMessage);
+  if (hintDelay !== null) {
+    return hintDelay;
+  }
+  // Fallback: exponential backoff (5s, 10s, 20s...)
+  return BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
+}
 
 /**
  * WriterAgent — Proposes code changes by reading files, generating new versions
@@ -68,7 +109,9 @@ const BASE_RETRY_DELAY_MS = 1000;
  * Does NOT write to disk directly; the orchestrator handles that.
  *
  * Retry strategy:
- * 1. API errors (rate limits, timeouts): retry with exponential backoff (1s, 2s)
+ * 1. API errors (rate limits, timeouts): retry with smart delay — parses
+ *    the "try again in Xs" hint from rate-limit errors, or falls back to
+ *    exponential backoff (5s, 10s)
  * 2. Empty parse results (format issue): retry once with stricter prompt instructions
  */
 export class WriterAgent extends Agent {
@@ -107,10 +150,10 @@ export class WriterAgent extends Agent {
 
         // Check if this is a transient API error worth retrying
         if (attempt < MAX_API_RETRIES) {
-          const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, attempt); // 1s, 2s
+          const delayMs = calculateRetryDelay(attempt, lastError);
           logger.warn(
             `Writer API error (attempt ${attempt + 1}/${MAX_API_RETRIES + 1}): ` +
-            `${lastError.slice(0, 200)}. Retrying in ${delayMs}ms...`,
+            `${lastError.slice(0, 200)}. Waiting ${(delayMs / 1000).toFixed(1)}s...`,
           );
           await new Promise((resolve) => setTimeout(resolve, delayMs));
           continue;
@@ -167,7 +210,7 @@ export class WriterAgent extends Agent {
 
     logger.debug(`[Writer ${label}] Parsed ${fileChanges.length} file change(s)`);
     for (const fc of fileChanges) {
-      logger.debug(`[Writer ${label}]   ${fc.status === 'created' ? '📄' : '✏️'} ${fc.path} (${(fc.newContent || '').length} chars)`);
+      logger.debug(`[Writer ${label}]   ${fc.status === 'created' ? '\u{1F4C4}' : '\u{270F}\u{FE0F}'} ${fc.path} (${(fc.newContent || '').length} chars)`);
     }
 
     // Store changes in the shared context
@@ -196,7 +239,7 @@ export class WriterAgent extends Agent {
       summary: `Proposed changes to ${count} file${count !== 1 ? 's' : ''}`,
       details: fileChanges
         .map((c) => {
-          const icon = c.status === 'created' ? '📄' : '✏️';
+          const icon = c.status === 'created' ? '\u{1F4C4}' : '\u{270F}\u{FE0F}';
           return `  ${icon} ${c.path} (${c.status})`;
         })
         .join('\n'),
@@ -222,7 +265,7 @@ export class WriterAgent extends Agent {
     const fileContext = filesToSend.length > 0
       ? filesToSend
           .map(({ artifact, truncated }) =>
-            `--- ${artifact.path} ---${truncated ? ` (truncated, ${artifact.content.length}→${truncated.length} chars)` : ''}\n${truncated || artifact.content}`
+            `--- ${artifact.path} ---${truncated ? ` (truncated, ${artifact.content.length}\u2192${truncated.length} chars)` : ''}\n${truncated || artifact.content}`
           )
           .join('\n\n') +
         (context.artifacts.length > filesToSend.length

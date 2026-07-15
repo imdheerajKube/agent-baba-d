@@ -300,7 +300,7 @@ describe('WriterAgent — execute retry logic', () => {
 
   // ── API Error Retry (exponential backoff) ────────────────────────────
 
-  it('should retry when LLM throws an API error and succeed on retry', async () => {
+  it('should retry when LLM throws an API error and succeed on retry', { timeout: 30000 }, async () => {
     // Fail first call, succeed on second
     const result = await writer.execute(context(), errorLLM(1));
 
@@ -309,7 +309,7 @@ describe('WriterAgent — execute retry logic', () => {
     expect(llmCallCount).toBe(2); // 1 failure + 1 success
   });
 
-  it('should retry multiple times when LLM keeps failing', async () => {
+  it('should retry multiple times when LLM keeps failing', { timeout: 30000 }, async () => {
     // Fail first 2 calls, succeed on third
     const result = await writer.execute(context(), errorLLM(2));
 
@@ -318,7 +318,7 @@ describe('WriterAgent — execute retry logic', () => {
     expect(llmCallCount).toBe(3); // 2 failures + 1 success
   });
 
-  it('should return failure after exhausting all retries', async () => {
+  it('should return failure after exhausting all retries', { timeout: 30000 }, async () => {
     // Always throw
     const result = await writer.execute(context(), errorLLM(Infinity));
 
@@ -358,7 +358,7 @@ describe('WriterAgent — execute retry logic', () => {
 
   // ── Combined: API Error + Format Retry ──────────────────────────────
 
-  it('should retry API error AND apply format retry on the retried attempt', async () => {
+  it('should retry API error AND apply format retry on the retried attempt', { timeout: 30000 }, async () => {
     // Call 1: throws API error
     // Call 2: succeeds but produces empty parse (no code blocks)
     // Call 3: format retry produces valid content
@@ -378,7 +378,7 @@ describe('WriterAgent — execute retry logic', () => {
     expect(llmCallCount).toBe(3); // 1 API error + 1 empty + 1 format retry success
   });
 
-  it('should handle API error followed by failed format retry', async () => {
+  it('should handle API error followed by failed format retry', { timeout: 30000 }, async () => {
     // Call 1: throws API error
     // Call 2: produces empty parse
     // Call 3: format retry also produces empty parse
@@ -400,7 +400,7 @@ describe('WriterAgent — execute retry logic', () => {
 
   // ── API Error on Format Retry ───────────────────────────────────────
 
-  it('should retry when the format retry call itself throws an API error', async () => {
+  it('should retry when the format retry call itself throws an API error', { timeout: 30000 }, async () => {
     // Call 1: produces empty parse → triggers format retry
     // Call 2: format retry throws API error → caught by outer retry loop
     // Call 3: retry attempt produces valid content
