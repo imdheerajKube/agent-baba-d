@@ -19,6 +19,7 @@
 
 import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import inquirer from 'inquirer';
 
 import { ProviderFactory } from '../inference/factory.js';
 import { ConfigManager } from '../config/manager.js';
@@ -27,7 +28,7 @@ import { logger } from '../utils/logger.js';
 
 import { ContextVault } from './context-vault.js';
 import { Agent } from './agent.js';
-import type { LLMCallFn, AgentResult, TaskStep } from './agent.js';
+import type { LLMCallFn, AgentResult, TaskStep, OnRateLimit } from './agent.js';
 import { buildProjectFileTree, truncateTree } from './utils/file-tree.js';
 import { PlannerAgent } from './agents/planner.js';
 import { ContextGathererAgent } from './agents/context-gatherer.js';
@@ -435,8 +436,96 @@ export class Orchestrator {
   }
 
   /**
-   * Execute a single task and record its result.
+   * Create the onRateLimit callback that prompts the user.
+   * Returns undefined if we're in non-interactive mode (no TTY or dry-run).
    */
+  private createRateLimitHandler(
+    options: OrchestratorOptions,
+    currentModel: string | undefined,
+  ): OnRateLimit | undefined {
+    // Don't prompt in non-interactive or dry-run mode — just use auto-retry
+    if (options.dryRun || !process.stdout.isTTY) {
+      return undefined;
+    }
+
+    return async (info) => {
+      const waitSeconds = (info.retryAfterMs / 1000).toFixed(1);
+      const modelStr = info.modelName
+        ? `Model: ${info.modelName}`
+        : currentModel
+          ? `Model: ${currentModel}`
+          : '';
+
+      console.log('');
+      logger.warn(`\u26A0\uFE0F  Rate limit hit for ${info.agentName}`);
+      logger.info(`   ${modelStr}`);
+      logger.info(`   Please wait ${waitSeconds}s before next request`);
+      console.log('');
+
+      const { action } = await inquirer.prompt<{ action: string }>([
+        {
+          type: 'list',
+          name: 'action',
+          message: `What would you like to do?`,
+          prefix: '\u{1F504}',
+          choices: [
+            { name: `\u23F3  Wait ${waitSeconds}s and retry`, value: 'retry' },
+            { name: '\u{1F500}  Switch to a different model', value: 'switch-model' },
+            { name: '\u23ED  Skip this step', value: 'skip' },
+            { name: '\u274C  Abort the pipeline', value: 'abort' },
+          ],
+        },
+      ]);
+
+      console.log('');
+
+      if (action === 'retry') {
+        logger.info(`Waiting ${waitSeconds}s as requested...`);
+        return { action: 'retry' };
+      }
+
+      if (action === 'skip') {
+        logger.info('Skipping this step.');
+        return { action: 'skip' };
+      }
+
+      if (action === 'abort') {
+        logger.error('Pipeline aborted by user.');
+        return { action: 'abort' };
+      }
+
+      if (action === 'switch-model') {
+        // Prompt for the new model name
+        const { model } = await inquirer.prompt<{ model: string }>([
+          {
+            type: 'input',
+            name: 'model',
+            message: 'Enter the new model name (e.g., llama-3.1-8b-instant, gemini-2.0-flash):',
+            prefix: '\u{1F3AF}',
+            validate: (input: string) => {
+              if (!input.trim()) return 'Please enter a model name';
+              return true;
+            },
+          },
+        ]);
+
+        console.log('');
+        logger.info(`Switching to model: ${model.trim()}`);
+
+        // Create a new LLM provider with the switched model
+        const newCallLLM = this.createLLMProvider({
+          ...options,
+          model: model.trim(),
+        });
+
+        return { action: 'switch-model', callLLM: newCallLLM };
+      }
+
+      // Fallback: retry
+      return { action: 'retry' };
+    };
+  }
+
   private async executeSingleTask(
     task: { id: string; agentType: string; description: string },
     vault: ContextVault,
@@ -482,6 +571,8 @@ export class Orchestrator {
         return;
       }
 
+      // Wire up the rate-limit handler so agents can prompt the user
+      vault.context.onRateLimit = this.createRateLimitHandler(options, agentModel || options.model);
       const result = await agent.execute(vault.context, agentCallLLM);
       vault.updateTaskStatus(task.id, result.success ? 'completed' : 'failed', result.summary);
       agentResults.push({ agent: task.agentType, success: result.success, summary: result.summary });

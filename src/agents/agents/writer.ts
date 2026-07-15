@@ -13,8 +13,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 
-import { Agent, type AgentContext, type AgentResult, type FileChange } from '../agent.js';
-import type { LLMCallFn } from '../agent.js';
+import { Agent, type AgentContext, type AgentResult, type FileChange, type LLMCallFn } from '../agent.js';
 import { logger } from '../../utils/logger.js';
 
 const WRITER_SYSTEM_PROMPT = `You are an expert software engineer implementing changes to a codebase.
@@ -63,9 +62,15 @@ const MAX_API_RETRIES = 2;
 const BASE_RETRY_DELAY_MS = 5000;
 
 /**
+ * Threshold above which we consider a rate-limit wait "long" and prompt the user.
+ * Short waits (< 3s) are auto-retried silently. Long waits prompt the user.
+ */
+const LONG_WAIT_THRESHOLD_MS = 3000;
+
+/**
  * Parse the "try again in Xs" hint from a rate-limit error response.
  * Supports formats: "try again in 10.49s", "try again in 5000ms"
- * Returns the suggested wait time in ms, or falls back to exponential backoff.
+ * Returns the suggested wait time in ms, or null if not found.
  */
 function parseRetryAfterHint(errorMessage: string): number | null {
   // Match patterns like: "try again in 10.49s" or "try again in 5000ms"
@@ -73,8 +78,7 @@ function parseRetryAfterHint(errorMessage: string): number | null {
   if (secondMatch) {
     const seconds = parseFloat(secondMatch[1]);
     if (!isNaN(seconds) && seconds > 0) {
-      // Add 1s padding to ensure the window fully resets
-      return Math.ceil(seconds * 1000) + 1000;
+      return Math.ceil(seconds * 1000);
     }
   }
 
@@ -82,11 +86,27 @@ function parseRetryAfterHint(errorMessage: string): number | null {
   if (msMatch) {
     const ms = parseInt(msMatch[1], 10);
     if (!isNaN(ms) && ms > 0) {
-      return ms + 1000;
+      return ms;
     }
   }
 
   return null;
+}
+
+/**
+ * Extract the model name from a rate-limit error message.
+ * Matches patterns like: "Rate limit reached for model `qwen/qwen3-32b`"
+ */
+function parseModelName(errorMessage: string): string | undefined {
+  const match = errorMessage.match(/model\s+`([^`]+)`|model\s+'([^']+)'|model\s+([^\s]+)/i);
+  return match?.[1] || match?.[2] || match?.[3] || undefined;
+}
+
+/**
+ * Check if an error message indicates a rate-limit (429) error.
+ */
+function isRateLimitError(errorMessage: string): boolean {
+  return /rate\s*limit|429|too many requests|try again in/i.test(errorMessage);
 }
 
 /**
@@ -109,10 +129,11 @@ function calculateRetryDelay(attempt: number, errorMessage: string): number {
  * Does NOT write to disk directly; the orchestrator handles that.
  *
  * Retry strategy:
- * 1. API errors (rate limits, timeouts): retry with smart delay — parses
- *    the "try again in Xs" hint from rate-limit errors, or falls back to
- *    exponential backoff (5s, 10s)
- * 2. Empty parse results (format issue): retry once with stricter prompt instructions
+ * 1. Rate-limit (429) errors with LONG wait (>3s): invokes onRateLimit callback
+ *    (if available) to let the user choose: wait, switch model, skip, or abort.
+ * 2. Rate-limit errors with SHORT wait (<=3s): auto-retry with smart delay.
+ * 3. Other transient errors (timeouts, network): auto-retry with backoff.
+ * 4. Empty parse results (format issue): retry once with stricter prompt.
  */
 export class WriterAgent extends Agent {
   readonly name = 'Writer';
@@ -120,18 +141,19 @@ export class WriterAgent extends Agent {
 
   async execute(context: AgentContext, callLLM: LLMCallFn): Promise<AgentResult> {
     let lastError: string | undefined;
+    let latestCallLLM = callLLM;
 
     // Outer retry loop: handles transient API errors (rate limits, timeouts)
     for (let attempt = 0; attempt <= MAX_API_RETRIES; attempt++) {
       try {
-        const result = await this.attemptWrite(context, callLLM);
+        const result = await this.attemptWrite(context, latestCallLLM);
 
         // Inner retry: handles empty parse results (format issue)
         // This runs on EVERY API attempt — API errors and format issues are independent.
         // The format retry always returns (success or note), so no infinite loop risk.
         if (result.success && result.summary === 'No files needed changes') {
           // Retry once with stricter format instructions
-          const retryResult = await this.attemptWrite(context, callLLM, true);
+          const retryResult = await this.attemptWrite(context, latestCallLLM, true);
 
           if (retryResult.success && retryResult.summary !== 'No files needed changes') {
             return retryResult;
@@ -148,14 +170,74 @@ export class WriterAgent extends Agent {
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
 
-        // Check if this is a transient API error worth retrying
+        // ── Rate limit handling with user prompt ─────────────────────
+        if (isRateLimitError(lastError) && context.onRateLimit) {
+          const retryAfterMs = parseRetryAfterHint(lastError) || BASE_RETRY_DELAY_MS;
+
+          if (retryAfterMs >= LONG_WAIT_THRESHOLD_MS) {
+            const modelName = parseModelName(lastError);
+            const action = await context.onRateLimit({
+              retryAfterMs,
+              modelName,
+              agentName: this.name,
+              errorMessage: lastError.slice(0, 300),
+            });
+
+            if (action.action === 'abort') {
+              logger.error(`Writer aborted by user: ${lastError}`);
+              return {
+                success: false,
+                summary: 'Writer aborted by user due to rate limit',
+                error: lastError,
+              };
+            }
+
+            if (action.action === 'skip') {
+              logger.info('Writer step skipped by user');
+              return {
+                success: true,
+                summary: 'Skipped by user (rate limit)',
+                details: 'The writer step was skipped because the API rate limit was exceeded.',
+              };
+            }
+
+            if (action.action === 'switch-model') {
+              logger.info('Switching model per user request...');
+              latestCallLLM = action.callLLM;
+              // Continue the retry loop with the new callLLM
+              await new Promise((resolve) => setTimeout(resolve, 500)); // Brief pause before retry
+              continue;
+            }
+
+            // 'retry': fall through to wait and retry below
+            logger.warn(
+              `Writer rate limited. Waiting ${(retryAfterMs / 1000).toFixed(1)}s as chosen by user...`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, retryAfterMs));
+            continue;
+          }
+          // Short wait: auto-retry (fall through to standard retry logic below)
+        }
+
+        // ── Standard retry for transient errors ──────────────────────
         if (attempt < MAX_API_RETRIES) {
-          const delayMs = calculateRetryDelay(attempt, lastError);
-          logger.warn(
-            `Writer API error (attempt ${attempt + 1}/${MAX_API_RETRIES + 1}): ` +
-            `${lastError.slice(0, 200)}. Waiting ${(delayMs / 1000).toFixed(1)}s...`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          if (isRateLimitError(lastError)) {
+            // Short wait rate limit: auto-retry with smart delay
+            const delayMs = calculateRetryDelay(attempt, lastError);
+            logger.warn(
+              `Writer API error (attempt ${attempt + 1}/${MAX_API_RETRIES + 1}): ` +
+              `${lastError.slice(0, 200)}. Waiting ${(delayMs / 1000).toFixed(1)}s...`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          } else {
+            // Other transient errors (timeout, network): standard exponential backoff
+            const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
+            logger.warn(
+              `Writer API error (attempt ${attempt + 1}/${MAX_API_RETRIES + 1}): ` +
+              `${lastError.slice(0, 200)}. Retrying in ${(delayMs / 1000).toFixed(1)}s...`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
           continue;
         }
 
@@ -282,23 +364,11 @@ export class WriterAgent extends Agent {
 
   /**
    * Parse the LLM response to extract file changes.
-   *
-   * Expected format:
-   * - ```filepath:path/to/file.ts\ncontent\n```
-   * - ```typescript filepath:path/to/file.ts\ncontent\n```
-   * - ```path/to/file.ts\ncontent\n```
-   *
-   * The regex requires the captured path to contain either a dot (file extension)
-   * or a slash (directory separator), which naturally skips bare language tags
-   * like ```typescript without a file path.
    */
   private parseFileChanges(response: string, workingDir: string): FileChange[] {
     const changes: FileChange[] = [];
 
     // Match code blocks containing a real file path.
-    // The path must have either: `.ext` (file extension) or `/` (directory separator).
-    // This naturally skips bare language tags like ```typescript without file paths.
-    // Groups: 1 = file path, 2 = content
     const blockRegex = /```(?:[a-zA-Z0-9+#]*\s+)?(?:filepath:)?([^\n`]+(?:\.[a-zA-Z0-9]+|\/[^\n`]+))\n([\s\S]*?)```/g;
     let match: RegExpExecArray | null;
 
@@ -320,21 +390,17 @@ export class WriterAgent extends Agent {
   /**
    * Select files within the given character budget.
    * Prioritizes smaller files first so the LLM sees as much complete context as possible.
-   * Larger files are truncated to fit within the remaining budget.
    */
   private selectFilesWithinBudget(
     artifacts: import('../agent.js').Artifact[],
     budget: number,
   ): Array<{ artifact: import('../agent.js').Artifact; truncated: string | null }> {
-    // Sort by size ascending (smallest first)
     const sorted = [...artifacts]
       .map((a) => ({ artifact: a, size: a.content.length }))
       .sort((a, b) => a.size - b.size);
 
     const result: Array<{ artifact: import('../agent.js').Artifact; truncated: string | null }> = [];
     let used = 0;
-
-    // Track overhead per file (header lines like "--- path.ts ---\n")
     const OVERHEAD_PER_FILE = 50;
 
     for (const { artifact, size } of sorted) {
@@ -343,21 +409,17 @@ export class WriterAgent extends Agent {
       const totalNeeded = size + OVERHEAD_PER_FILE;
 
       if (used + totalNeeded <= budget) {
-        // File fits entirely
         result.push({ artifact, truncated: null });
         used += totalNeeded;
       } else if (used + OVERHEAD_PER_FILE < budget) {
-        // File doesn't fit entirely, but we can show a truncated version
         const remaining = budget - used - OVERHEAD_PER_FILE;
         if (remaining > 200) {
-          // Only include if we can show at least 200 meaningful chars
           const truncated = artifact.content.slice(0, remaining);
           result.push({ artifact, truncated });
-          used = budget; // Budget exhausted
+          used = budget;
         }
         break;
       } else {
-        // No budget left
         break;
       }
     }
@@ -365,9 +427,6 @@ export class WriterAgent extends Agent {
     return result;
   }
 
-  /**
-   * Add a file change if the content differs from the existing file.
-   */
   private addFileChange(
     changes: FileChange[],
     filePath: string,
@@ -378,7 +437,6 @@ export class WriterAgent extends Agent {
 
     if (existsSync(absolutePath)) {
       const originalContent = readFileSync(absolutePath, 'utf-8');
-      // Only add if content actually changed
       if (originalContent.trim() !== content.trim()) {
         changes.push({
           path: filePath,

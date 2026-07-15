@@ -71,6 +71,13 @@ export interface AgentContext {
 
   /** Arbitrary metadata for extensibility */
   metadata: Record<string, unknown>;
+
+  /**
+   * Optional callback invoked when a rate-limit (429) error is detected.
+   * If provided, the agent will call this instead of auto-retrying.
+   * The orchestrator sets this to prompt the user for their preferred action.
+   */
+  onRateLimit?: OnRateLimit;
 }
 
 /** The result returned by an agent after execution */
@@ -80,6 +87,36 @@ export interface AgentResult {
   details?: string;
   error?: string;
 }
+
+/**
+ * Information about a rate-limit error, passed to onRateLimit callback.
+ */
+export interface RateLimitInfo {
+  retryAfterMs: number;
+  modelName?: string;
+  provider?: string;
+  agentName: string;
+  errorMessage: string;
+}
+
+/**
+ * Actions the orchestrator/user can take when a rate limit is hit.
+ * - 'retry': wait the suggested time and retry with the current model
+ * - 'skip': gracefully skip this step (return soft success)
+ * - 'abort': fail immediately and stop the pipeline
+ * - 'switch-model': retry with a different model (callback provides new callLLM)
+ */
+export type RateLimitAction =
+  | { action: 'retry' }
+  | { action: 'skip' }
+  | { action: 'abort' }
+  | { action: 'switch-model'; callLLM: LLMCallFn };
+
+/**
+ * Callback used by agents to ask the orchestrator/user what to do on rate limit.
+ * If not set, the agent uses its built-in retry logic (auto-wait + retry).
+ */
+export type OnRateLimit = (info: RateLimitInfo) => Promise<RateLimitAction>;
 
 /**
  * Callback type that agents use to invoke the LLM.
