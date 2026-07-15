@@ -1,6 +1,6 @@
 {
   "name": "agent-baba-d",
-  "version": "1.13.0",
+  "version": "1.14.0",
   "description": "Agent-Baba-D: Multi-agent AI coding CLI — plan, write, review, test, and publish code with local models (Ollama) or cloud APIs (Groq, NVIDIA NIM, Google Gemini, OpenRouter)",
   "type": "module",
   "main": "dist/index.js",
@@ -60,6 +60,7 @@
   "dependencies": {
     "chalk": "^5.3.0",
     "commander": "^12.0.0",
+    "freebuff": "^0.0.124",
     "inquirer": "^9.3.0",
     "ora": "^8.0.0"
   },

@@ -18,7 +18,7 @@
  */
 
 import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import inquirer from 'inquirer';
 
 import { ProviderFactory } from '../inference/factory.js';
@@ -636,8 +636,27 @@ export class Orchestrator {
         }
       }
 
-      // After writer step: sync new/modified files into artifacts
+      // After debugger step: write debugger's fixes to disk immediately
+      // The DebuggerAgent's syncChangesToContext() updates context.fileChanges
+      // with LLM-generated fixes. If a runner step follows the debugger, those
+      // fixes must be on disk before the runner executes.
+      if (task.agentType === 'debugger' && result.success && !options.dryRun) {
+        const applied = this.applyFileChanges(vault);
+        if (applied > 0 && options.verbose) {
+          logger.info(`      💾 Applied ${applied} debug fix(es) to disk`);
+        }
+      }
+
+      // After writer step: write files to disk immediately and sync into artifacts
+      // IMPORTANT: files MUST be on disk before the RunnerAgent tries to execute them
       if (task.agentType === 'writer' && result.success) {
+        if (!options.dryRun) {
+          const applied = this.applyFileChanges(vault);
+          if (applied > 0 && options.verbose) {
+            logger.info(`      💾 Applied ${applied} file change${applied !== 1 ? 's' : ''} to disk`);
+          }
+        }
+
         const newArtifacts = vault.context.fileChanges
           .filter((c) => c.status === 'created' || c.status === 'modified')
           .filter((c) => c.newContent)
@@ -700,7 +719,7 @@ export class Orchestrator {
 
       const absolutePath = isAbsolute(change.path)
         ? change.path
-        : join(process.cwd(), change.path);
+        : resolve(process.cwd(), change.path);
 
       const dir = dirname(absolutePath);
       if (!existsSync(dir)) {

@@ -1,3 +1,5 @@
+import { createInterface } from 'node:readline';
+
 import { Command } from 'commander';
 import inquirer from 'inquirer';
 import ora from 'ora';
@@ -162,16 +164,7 @@ export class ChatCommand extends BaseCommand {
     this.devModeAuto = false;
 
     while (true) {
-      const answers = await inquirer.prompt<{ message: string }>([
-        {
-          type: 'input',
-          name: 'message',
-          message: 'You:',
-          prefix: '',
-        },
-      ]);
-
-      const message = answers.message.trim();
+      const message = await this.readMultiLineInput('You:');
       if (!message) continue;
 
       if (message.startsWith('/')) {
@@ -276,6 +269,62 @@ export class ChatCommand extends BaseCommand {
    */
   private async showModelPicker(): Promise<{ provider: string; model: string } | null> {
     return showModelPicker(this.configManager);
+  }
+
+  /**
+   * Read multi-line input from stdin using readline.
+   *
+   * - First line prompt: "You: "
+   * - Continuation lines prompt: "  > "
+   * - Pressing Enter with no text on the first line re-prompts
+   * - An empty line after non-empty input submits the message
+   * - This allows pasting multi-line text (each line collected), then Enter to submit
+   */
+  private readMultiLineInput(prompt: string): Promise<string> {
+    return new Promise((resolve) => {
+      const rl = createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        prompt: prompt + ' ',
+      });
+
+      const lines: string[] = [];
+      let isFirstLine = true;
+
+      rl.on('line', (line) => {
+        if (isFirstLine) {
+          isFirstLine = false;
+          if (line === '') {
+            // Just pressed Enter on first line with no text — re-prompt
+            rl.prompt();
+            isFirstLine = true;
+            return;
+          }
+          lines.push(line);
+          // Commands (starting with '/') should submit immediately — no continuation needed
+          if (line.startsWith('/')) {
+            rl.close();
+            return;
+          }
+          rl.setPrompt('  > ');
+          rl.prompt();
+        } else {
+          if (line === '') {
+            // Empty line on continuation — submit the full message
+            rl.close();
+          } else {
+            lines.push(line);
+            rl.prompt();
+          }
+        }
+      });
+
+      rl.on('close', () => {
+        resolve(lines.join('\n'));
+      });
+
+      rl.prompt();
+    });
   }
 
   private handleCommand(cmd: string, provider: any, model?: string): boolean {

@@ -10,9 +10,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import { execSync } from 'node:child_process';
 
 import { RunnerAgent } from '../../../src/agents/agents/runner.js';
 import type { AgentContext, LLMCallFn } from '../../../src/agents/agent.js';
@@ -616,6 +617,138 @@ describe('RunnerAgent', () => {
       const result = await runner.execute(ctx, async () => '');
       expect(result.success).toBe(true);
       expect(result.details).toContain('ok');
+    });
+  });
+
+  // ─── Writer → Runner Integration (File Write Then Run) ─────────────────
+  //
+  // These tests validate the exact scenario that was broken on Windows:
+  // the WriterAgent creates a file (stored in context.fileChanges), the file
+  // is written to disk, and then the RunnerAgent executes a command that
+  // references that file. This catches path-resolution regressions across
+  // Windows, Linux, and macOS.
+  //
+  // Unlike the orchestrator's applyFileChanges (which resolves relative paths
+  // via resolve(process.cwd(), change.path) in the applyFileChanges method),
+  // here we directly write the file before running the runner to simulate the
+  // same flow without spinning up the full orchestrator.
+
+  describe('writer → runner integration (file-write-then-execute)', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'buff-writer-runner-'));
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    /** Check if a CLI tool is available */
+    function isToolAvailable(tool: string): boolean {
+      try {
+        execSync(`${tool} --version`, { stdio: 'ignore', timeout: 5000 });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * Write a file to the temp dir (simulating what the WriterAgent +
+     * orchestrator.applyFileChanges would do), then run a command against it.
+     */
+    async function writeThenRun(
+      fileName: string,
+      fileContent: string,
+      runCommand: string,
+    ): Promise<{ result: import('../../../src/agents/agents/runner.js').AgentResult; runResult: RunResult }> {
+      // Step 1: Write the file (simulating orchestrator's applyFileChanges)
+      const absolutePath = resolve(tmpDir, fileName);
+      const dir = dirname(absolutePath);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(absolutePath, fileContent, 'utf-8');
+      expect(existsSync(absolutePath)).toBe(true);
+
+      // Step 2: Run the command against it
+      const ctx = makeContext({
+        workingDirectory: tmpDir,
+        taskPlan: [
+          {
+            id: 'step-run',
+            description: `Run: ${runCommand}`,
+            agentType: 'runner',
+            dependsOn: [],
+            status: 'running',
+          },
+        ],
+        fileChanges: [
+          { path: fileName, newContent: fileContent, status: 'created' },
+        ],
+      });
+
+      const result = await runner.execute(ctx, async () => '');
+      const runResult = ctx.metadata['runResult'] as RunResult;
+      return { result, runResult };
+    }
+
+    it('should run a Python script written to the working directory', async () => {
+      if (!isToolAvailable('python') && !isToolAvailable('python3')) {
+        return; // Skip — Python not available
+      }
+      const pythonCmd = isToolAvailable('python3') ? 'python3' : 'python';
+
+      const { result, runResult } = await writeThenRun(
+        'hello_world.py',
+        'print("Hello from Runner!")',
+        `${pythonCmd} hello_world.py`,
+      );
+
+      expect(result.success).toBe(true);
+      expect(runResult.exitCode).toBe(0);
+      expect(runResult.stdout).toContain('Hello from Runner!');
+    });
+
+    it('should run a Node.js script written to the working directory', async () => {
+      if (!isToolAvailable('node')) {
+        return; // Skip — Node not available (shouldn't happen in CI)
+      }
+
+      const { result, runResult } = await writeThenRun(
+        'script.js',
+        'console.log("Hello from Runner!")',
+        'node script.js',
+      );
+
+      expect(result.success).toBe(true);
+      expect(runResult.exitCode).toBe(0);
+      expect(runResult.stdout).toContain('Hello from Runner!');
+    });
+
+    it('should handle file in a subdirectory with relative path', async () => {
+      const { result, runResult } = await writeThenRun(
+        'subdir/greeting.txt',
+        'Hello from subdirectory',
+        // Use node -e to read the file (works cross-platform unlike cat/type)
+        'node -e "console.log(require(\'fs\').readFileSync(\'subdir/greeting.txt\',\'utf-8\'))"',
+      );
+
+      expect(result.success).toBe(true);
+      expect(runResult.exitCode).toBe(0);
+      expect(runResult.stdout).toContain('Hello from subdirectory');
+    });
+
+    it('should handle a file with spaces in the path', async () => {
+      const { result, runResult } = await writeThenRun(
+        'my folder/test.js',
+        'console.log("path with spaces works")',
+        // Node handles spaces in quoted paths correctly on all platforms
+        'node "my folder/test.js"',
+      );
+
+      expect(result.success).toBe(true);
+      expect(runResult.exitCode).toBe(0);
+      expect(runResult.stdout).toContain('path with spaces works');
     });
   });
 });
