@@ -188,9 +188,14 @@ export class PlannerAgent extends Agent {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // Detect non-chat-model errors and provide helpful suggestions
+      let summary = 'Planner failed';
+      if (msg.includes('does not support chat completions')) {
+        summary = 'Planner failed — selected model does not support text chat. Use a text model like llama-3.3-70b-versatile or llama-3.1-8b-instant';
+      }
       return {
         success: false,
-        summary: 'Planner failed',
+        summary,
         error: msg,
       };
     }

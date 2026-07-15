@@ -1,6 +1,6 @@
 {
   "name": "agent-baba-d",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Flexible AI inference CLI tool supporting local models and cloud APIs",
   "type": "module",
   "main": "dist/index.js",

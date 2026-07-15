@@ -129,9 +129,9 @@ describe('OpenRouterAdapter', () => {
       const models = await adapter.listModels();
 
       expect(models).toHaveLength(3);
-      expect(models[0]).toEqual({ id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'openrouter', description: 'OpenAI flagship model' });
-      expect(models[1]).toEqual({ id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku', provider: 'openrouter', description: 'Fast & affordable' });
-      expect(models[2]).toEqual({ id: 'mistralai/mistral-7b-instruct', name: 'mistralai/mistral-7b-instruct', provider: 'openrouter', description: 'Mistral 7B' });
+      expect(models[0]).toEqual({ id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'openrouter', description: 'OpenAI flagship model', tags: expect.arrayContaining([expect.any(String)]) });
+      expect(models[1]).toEqual({ id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku', provider: 'openrouter', description: 'Fast & affordable', tags: expect.arrayContaining([expect.any(String)]) });
+      expect(models[2]).toEqual({ id: 'mistralai/mistral-7b-instruct', name: 'mistralai/mistral-7b-instruct', provider: 'openrouter', description: 'Mistral 7B', tags: expect.arrayContaining([expect.any(String)]) });
 
       expect(mockFetch).toHaveBeenCalledWith('https://openrouter.ai/api/v1/models', {
         headers: { 'Authorization': 'Bearer sk-or-test' },

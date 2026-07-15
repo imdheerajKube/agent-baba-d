@@ -152,18 +152,21 @@ describe('GeminiAdapter', () => {
         name: 'Gemini 2.0 Flash',
         provider: 'gemini',
         description: 'Fast multimodal',
+        tags: expect.arrayContaining([expect.any(String)]),
       });
       expect(models[1]).toEqual({
         id: 'gemini-pro',
         name: 'Gemini Pro',
         provider: 'gemini',
         description: 'General purpose',
+        tags: expect.arrayContaining([expect.any(String)]),
       });
       expect(models[2]).toEqual({
         id: 'gemma-2-2b-it',
         name: 'Gemma 2',
         provider: 'gemini',
         description: 'Lightweight',
+        tags: expect.arrayContaining([expect.any(String)]),
       });
 
       // Verify the URL includes the API key

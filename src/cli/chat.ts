@@ -7,17 +7,19 @@ import { ContextParser } from '../context/parser.js';
 import { getCache } from '../context/cache.js';
 import { logger } from '../utils/logger.js';
 import { ProviderType } from '../config/types.js';
-import { InferenceProvider } from '../inference/interface.js';
+import { InferenceProvider, ModelDescriptor } from '../inference/interface.js';
 import { Orchestrator } from '../agents/orchestrator.js';
 import { printOrchestrationResult } from './execute.js';
+import {
+  ModelCategory,
+  CATEGORY_INFO,
+  categorizeModel,
+  getModelBadge,
+} from '../inference/model-catalog.js';
 
 /**
  * Patterns that indicate a user wants to CREATE or MODIFY files on disk
  * (as opposed to just asking a conversational question).
- *
- * When the user's message matches these patterns, the chat will offer to
- * switch to "developer mode" — which runs the full multi-agent pipeline
- * to actually create the files in the project directory.
  */
 const CREATION_PATTERNS = [
   /\b(?:create|write|make|build|generate|implement|scaffold)\b.*\b(?:file|program|script|app|function|class|module|component|page|route|api|endpoint|service|cli|tool|package|library|project)\b/i,
@@ -27,16 +29,12 @@ const CREATION_PATTERNS = [
   /^\s*(?:create|write|make|build|generate)\s+(?:a|an|the)\s+/i,
 ];
 
-/**
- * Check if a user message looks like a file-creation request.
- */
 function hasCreationIntent(message: string): boolean {
   return CREATION_PATTERNS.some((pattern) => pattern.test(message));
 }
 
 /**
  * Prompt the user whether they want to switch to developer mode.
- * Returns true if they want to proceed with file creation.
  */
 async function promptDeveloperMode(message: string): Promise<boolean> {
   console.log('');
@@ -65,7 +63,6 @@ async function promptDeveloperMode(message: string): Promise<boolean> {
 
 /**
  * Execute the multi-agent pipeline for a user's goal.
- * Returns true if the execution completed (for flow control).
  */
 async function runDeveloperMode(
   goal: string,
@@ -94,15 +91,46 @@ async function runDeveloperMode(
   }
 }
 
+// ─── Category Display Order ─────────────────────────────────────────────────
+
 /**
- * Chat command — interactive conversation with AI
- * buff chat [--provider local] [--model llama2]
- *
- * When the user asks to create files, the chat automatically offers to
- * switch to developer mode (execute pipeline) for direct file creation.
+ * Display priority for categories (lower = shown first).
+ * This determines the order in the model picker.
  */
+const CATEGORY_ORDER: Record<ModelCategory, number> = {
+  chat: 0,
+  code: 1,
+  reasoning: 2,
+  fast: 3,
+  creative: 4,
+  vision: 5,
+  instruct: 6,
+  agentic: 7,
+  preview: 8,
+  other: 9,
+};
+
+// ─── Provider Metadata ──────────────────────────────────────────────────────
+
+const PROVIDER_ICONS: Record<string, string> = {
+  local: '💻',
+  nim: '🔶',
+  gemini: '🔷',
+  openrouter: '🟣',
+  groq: '🟢',
+};
+
+const PROVIDER_ELIGIBILITY: Record<string, string> = {
+  local: 'Works offline — no API key needed',
+  nim: 'NVIDIA NIM API cloud service',
+  gemini: 'Google Gemini API cloud service',
+  openrouter: 'OpenRouter unified API service',
+  groq: 'Groq LPU cloud inference service',
+};
+
+// ─── ChatCommand ────────────────────────────────────────────────────────────
+
 export class ChatCommand extends BaseCommand {
-  /** Tracks whether /dev mode is active (auto-runs orchestrator for all messages) */
   private devModeAuto = false;
 
   create(): Command {
@@ -128,9 +156,8 @@ export class ChatCommand extends BaseCommand {
     // In interactive mode (no prompt), show the model picker if no --model was specified
     if (!model && !prompt) {
       const picked = await this.showModelPicker();
-      if (!picked) return; // User cancelled
+      if (!picked) return;
 
-      // If user picked a different provider, re-resolve
       if (picked.provider !== type) {
         const resolved = resolveProvider(this.configManager, picked.provider);
         type = resolved.type;
@@ -146,12 +173,9 @@ export class ChatCommand extends BaseCommand {
       return;
     }
 
-    // Determine if caching is enabled (default: enabled, disabled with --no-cache)
     const cacheEnabled = options?.cache !== false;
 
-    // ── One-shot mode ───────────────────────────────────────────────────
     if (prompt) {
-      // Check for creation intent
       if (options?.dev || hasCreationIntent(prompt)) {
         const proceed = options?.dev || await promptDeveloperMode(prompt);
         if (proceed) {
@@ -160,13 +184,11 @@ export class ChatCommand extends BaseCommand {
         }
       }
 
-      // Normal chat response
       const result = await this.generateWithContext(provider, prompt, type, { ...options, model }, cacheEnabled);
       console.log('\n' + result);
       return;
     }
 
-    // ── Interactive mode ─────────────────────────────────────────────────
     logger.highlight(`\n🧠 Buff Chat — ${provider.name}`);
     if (model) {
       logger.info(`Model: ${model}`);
@@ -175,7 +197,7 @@ export class ChatCommand extends BaseCommand {
     logger.info(`💡 Tip: Ask me to "create" something and I'll offer to switch to developer mode!\n`);
 
     const history: Array<{ role: string; content: string }> = [];
-    this.devModeAuto = false; // Reset /dev toggle on each chat session
+    this.devModeAuto = false;
 
     while (true) {
       const answers = await inquirer.prompt<{ message: string }>([
@@ -188,7 +210,6 @@ export class ChatCommand extends BaseCommand {
       ]);
 
       const message = answers.message.trim();
-
       if (!message) continue;
 
       if (message.startsWith('/')) {
@@ -196,12 +217,10 @@ export class ChatCommand extends BaseCommand {
         continue;
       }
 
-      // ── Check for creation intent ─────────────────────────────────────
       if (hasCreationIntent(message) || this.devModeAuto) {
         const proceed = this.devModeAuto || await promptDeveloperMode(message);
         if (proceed) {
           await runDeveloperMode(message, this.configManager, { provider: type, model });
-          // After developer mode completes, ask if they want to continue chatting
           const continueAnswer = await inquirer.prompt<{ cont: string }>([
             {
               type: 'input',
@@ -216,18 +235,14 @@ export class ChatCommand extends BaseCommand {
           }
           continue;
         }
-        // User chose chat mode — fall through to normal LLM response
       }
 
       history.push({ role: 'user', content: message });
 
-      // Build context from history
       const contextStr = history.map((h) => `${h.role}: ${h.content}`).join('\n');
-
       const cache = getCache();
       const effectiveModel = model || this.configManager.getProviderConfig(type).config.model || 'default';
 
-      // Check cache first
       if (cacheEnabled) {
         const cachedResult = await cache.get(message, effectiveModel, type);
         if (cachedResult) {
@@ -240,7 +255,6 @@ export class ChatCommand extends BaseCommand {
       const context = new ContextParser().parseFromString(contextStr, 'chat');
       const fullPrompt = ContextParser.formatContext(context);
 
-      // Use streaming when available
       if (typeof provider.generateStream === 'function') {
         console.log();
         try {
@@ -283,27 +297,23 @@ export class ChatCommand extends BaseCommand {
   }
 
   /**
-   * Show a cross-platform numbered menu that discovers available providers
-   * and lets the user choose a model before starting the chat.
+   * Show a categorized model picker that groups models by capability.
+   *
+   * Example output:
+   *
+   *   🎯  Available Models
+   *
+   *   💬 Chat (General conversation)
+   *    1. 🟢  llama-3.3-70b-versatile  ⭐ Best all-rounder — strong at...
+   *    2. 🟢  gemma2-9b-it
+   *
+   *   💻 Code (Code generation, programming)
+   *    3. 🔷  gemini-2.0-flash-exp  ⭐ Latest Gemini — fast, multimodal...
+   *
+   *   Enter a number (0-8):
    */
   private async showModelPicker(): Promise<{ provider: string; model: string } | null> {
     logger.highlight('\n🔍 Checking available providers...\n');
-
-    const providerIcons: Record<string, string> = {
-      local: '💻',
-      nim: '🔶',
-      gemini: '🔷',
-      openrouter: '🟣',
-      groq: '🟢',
-    };
-
-    const providerEligibility: Record<string, string> = {
-      local: 'Works offline — no API key needed',
-      nim: 'NVIDIA NIM API cloud service',
-      gemini: 'Google Gemini API cloud service',
-      openrouter: 'OpenRouter unified API service',
-      groq: 'Groq LPU cloud inference service',
-    };
 
     const providerTypes: ProviderType[] = ['local', 'nim', 'gemini', 'openrouter', 'groq'];
 
@@ -318,8 +328,8 @@ export class ChatCommand extends BaseCommand {
     const availableProviders: Array<{ type: ProviderType; provider: InferenceProvider; name: string }> = [];
 
     for (const { pt, resolved, available } of checkResults) {
-      const icon = providerIcons[pt] || '🔹';
-      const eligibility = providerEligibility[pt] || '';
+      const icon = PROVIDER_ICONS[pt] || '🔹';
+      const eligibility = PROVIDER_ELIGIBILITY[pt] || '';
 
       if (available) {
         availableProviders.push({ type: pt, provider: resolved.provider, name: resolved.provider.name });
@@ -338,17 +348,13 @@ export class ChatCommand extends BaseCommand {
       return null;
     }
 
-    logger.highlight('\n📡 Fetching available models...\n');
+    logger.highlight('\n📡 Fetching available models...');
+    console.log('');
 
     const loadingSpinner = ora('  Loading models...').start();
 
-    interface ModelChoice {
-      label: string;
-      provider: string;
-      model: string;
-    }
-
-    const modelChoices: ModelChoice[] = [];
+    // Collect ALL models from all providers
+    const allModels: ModelDescriptor[] = [];
 
     const modelResults = await Promise.all(
       availableProviders.map(async ({ type, provider: prov, name }) => {
@@ -376,37 +382,119 @@ export class ChatCommand extends BaseCommand {
 
       logger.success(`  ✅ ${name}: ${models.length} model${models.length !== 1 ? 's' : ''} available`);
 
-      const MAX_MODELS_PER_PROVIDER = 15;
-      const modelsToShow = models.slice(0, MAX_MODELS_PER_PROVIDER);
-
-      for (const model of modelsToShow) {
-        const icon = providerIcons[type] || '🔹';
-        const owner = model.owner ? ` [${model.owner}]` : '';
-        const label = `${icon}  ${model.name}${owner}`;
-        modelChoices.push({ label, provider: type, model: model.id });
-      }
+      const MAX_MODELS_PER_PROVIDER = 20;
+      const modelsToShow = models.slice(0, MAX_MODELS_PER_PROVIDER).map((m) => ({
+        ...m,
+        _providerType: type,
+      }));
+      allModels.push(...modelsToShow);
 
       if (models.length > MAX_MODELS_PER_PROVIDER) {
-        logger.info(`    📋 ... and ${models.length - MAX_MODELS_PER_PROVIDER} more (use: agent-baba-d models --provider ${type})`);
+        logger.info(`    📋 ... and ${models.length - MAX_MODELS_PER_PROVIDER} more (use: buff models --provider ${type})`);
       }
     }
 
-    if (modelChoices.length === 0) {
+    if (allModels.length === 0) {
       logger.error('\n⚠️  No models found from any available provider.');
       return null;
     }
 
-    console.log();
-    logger.highlight('🎯  Available Models\n');
-
-    for (let i = 0; i < modelChoices.length; i++) {
-      const num = (i + 1).toString().padStart(2, ' ');
-      console.log(`  ${num}. ${modelChoices[i].label}`);
+    // ── Categorize & group models ──────────────────────────────────────────
+    const modelProviderMap = new Map<string, string>();
+    for (const m of allModels) {
+      modelProviderMap.set(m.id, (m as any)._providerType || m.provider);
     }
+
+    // Build categorized array and group by category
+    const grouped = new Map<ModelCategory, Array<{
+      model: string;
+      provider: string;
+      name: string;
+      category: ModelCategory;
+      tags: string[];
+      badge?: string;
+      providerIcon: string;
+    }>>();
+
+    for (const m of allModels) {
+      const category = categorizeModel(m.id, m.owner);
+      const badge = getModelBadge(m.id);
+      const providerType = modelProviderMap.get(m.id) || m.provider;
+      const providerIcon = PROVIDER_ICONS[providerType] || '🔹';
+
+      const entry = {
+        model: m.id,
+        provider: providerType,
+        name: m.name,
+        category,
+        tags: m.tags || [],
+        badge,
+        providerIcon,
+      };
+
+      if (!grouped.has(category)) grouped.set(category, []);
+      grouped.get(category)!.push(entry);
+    }
+
+    // Sort categories by display order
+    const sortedCategories = Array.from(grouped.keys()).sort(
+      (a, b) => (CATEGORY_ORDER[a] ?? 99) - (CATEGORY_ORDER[b] ?? 99)
+    );
+
+    // Build the display list in render order (category-grouped) so selection indices match
+    const displayList: Array<{
+      model: string;
+      provider: string;
+      category: ModelCategory;
+      badge?: string;
+    }> = [];
+
+    // ── Render the picker ──────────────────────────────────────────────────
+    console.log();
+    logger.highlight('🎯  Available Models');
+    console.log('');
+
+    for (const cat of sortedCategories) {
+      const models = grouped.get(cat)!;
+      const info = CATEGORY_INFO[cat];
+
+      // Category header
+      console.log(`  ${info.icon}  ${info.label}  — ${info.description}`);
+
+      for (const choice of models) {
+        displayList.push({
+          model: choice.model,
+          provider: choice.provider,
+          category: choice.category,
+          badge: choice.badge,
+        });
+        const num = String(displayList.length).padStart(2, ' ');
+        const nameStr = choice.name;
+
+        // Show secondary category tags (except the primary one)
+        const secondaryTags = (choice.tags || [])
+          .filter((t: string) => t !== choice.category)
+          .slice(0, 2)
+          .map((t: string) => {
+            const ci = CATEGORY_INFO[t as ModelCategory];
+            return ci ? ci.icon : t;
+          })
+          .join(' ');
+
+        const tagsStr = secondaryTags ? `  ${secondaryTags}` : '';
+
+        // Show badge inline if available
+        const badgeStr = choice.badge ? `  ⭐ ${choice.badge}` : '';
+
+        console.log(`  ${num}. ${choice.providerIcon}  ${nameStr}${tagsStr}${badgeStr}`);
+      }
+      console.log('');
+    }
+
     console.log(`   0. ❌  Cancel`);
     console.log();
 
-    const selectableTotal = modelChoices.length;
+    const selectableTotal = displayList.length;
 
     const answer = await inquirer.prompt<{ selected: string }>([
       {
@@ -432,20 +520,20 @@ export class ChatCommand extends BaseCommand {
       return null;
     }
 
-    const selected = modelChoices[selectedIndex - 1];
-
+    const selected = displayList[selectedIndex - 1];
     console.log('\n'.repeat(2));
-
     const providerName = availableProviders.find(p => p.type === selected.provider)?.name || selected.provider;
     logger.success(`🎯  Selected: ${selected.model}`);
-    logger.info(`   Provider: ${providerName}\n`);
+    logger.info(`   Provider: ${providerName}`);
+    logger.info(`   Category: ${CATEGORY_INFO[selected.category].icon} ${CATEGORY_INFO[selected.category].label}`);
+    if (selected.badge) {
+      logger.info(`   ${selected.badge}`);
+    }
+    console.log('');
 
     return { provider: selected.provider, model: selected.model };
   }
 
-  /**
-   * Handle interactive commands
-   */
   private handleCommand(cmd: string, provider: any, model?: string): boolean {
     switch (cmd.toLowerCase()) {
       case '/exit':
@@ -482,9 +570,6 @@ Commands:
     return false;
   }
 
-  /**
-   * Generate response with file context if needed
-   */
   private async generateWithContext(
     provider: any,
     prompt: string,

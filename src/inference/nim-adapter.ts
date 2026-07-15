@@ -2,6 +2,7 @@ import { InferenceProvider, ModelDescriptor } from './interface.js';
 import { InferenceOptions, ProviderConfig } from '../config/types.js';
 import { logger } from '../utils/logger.js';
 import { streamCompletion } from './sse.js';
+import { getModelTags } from './model-catalog.js';
 
 const DEFAULT_NIM_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 
@@ -112,6 +113,7 @@ export class NIMAdapter implements InferenceProvider {
         name: m.id.split('/').pop() || m.id,
         provider: 'nim',
         owner: m.owned_by || 'nvidia',
+        tags: getModelTags(m.id, m.owned_by),
       }));
     } catch {
       return [];

@@ -180,9 +180,9 @@ describe('LocalAdapter', () => {
       const models = await adapter.listModels();
 
       expect(models).toHaveLength(3);
-      expect(models[0]).toEqual({ id: 'llama2:latest', name: 'llama2:latest', provider: 'local' });
-      expect(models[1]).toEqual({ id: 'mistral:latest', name: 'mistral:latest', provider: 'local' });
-      expect(models[2]).toEqual({ id: 'codellama:latest', name: 'codellama:latest', provider: 'local' });
+      expect(models[0]).toEqual({ id: 'llama2:latest', name: 'llama2:latest', provider: 'local', tags: expect.arrayContaining([expect.any(String)]) });
+      expect(models[1]).toEqual({ id: 'mistral:latest', name: 'mistral:latest', provider: 'local', tags: expect.arrayContaining([expect.any(String)]) });
+      expect(models[2]).toEqual({ id: 'codellama:latest', name: 'codellama:latest', provider: 'local', tags: expect.arrayContaining([expect.any(String)]) });
 
       expect(mockFetch).toHaveBeenCalledWith('http://localhost:11434/api/tags');
     });

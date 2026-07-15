@@ -1,6 +1,7 @@
 import { InferenceProvider, ModelDescriptor } from './interface.js';
 import { InferenceOptions, ProviderConfig } from '../config/types.js';
 import { logger } from '../utils/logger.js';
+import { getModelTags } from './model-catalog.js';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
@@ -82,6 +83,7 @@ export class OpenRouterAdapter implements InferenceProvider {
         name: m.name || m.id,
         provider: 'openrouter',
         description: m.description,
+        tags: getModelTags(m.id),
       }));
     } catch {
       return [];

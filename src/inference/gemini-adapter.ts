@@ -1,6 +1,7 @@
 import { InferenceProvider, ModelDescriptor } from './interface.js';
 import { InferenceOptions, ProviderConfig } from '../config/types.js';
 import { logger } from '../utils/logger.js';
+import { getModelTags } from './model-catalog.js';
 
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -75,12 +76,16 @@ export class GeminiAdapter implements InferenceProvider {
       const response = await fetch(`${GEMINI_BASE_URL}?key=${apiKey}`);
       if (!response.ok) return [];
       const data = (await response.json()) as { models?: Array<{ name: string; displayName?: string; description?: string }> };
-      return (data.models || []).map((m: { name: string; displayName?: string; description?: string }) => ({
-        id: m.name.replace('models/', ''),
-        name: m.displayName || m.name.replace('models/', ''),
-        provider: 'gemini',
-        description: m.description,
-      }));
+      return (data.models || []).map((m: { name: string; displayName?: string; description?: string }) => {
+        const id = m.name.replace('models/', '');
+        return {
+          id,
+          name: m.displayName || id,
+          provider: 'gemini',
+          description: m.description,
+          tags: getModelTags(id),
+        };
+      });
     } catch {
       return [];
     }

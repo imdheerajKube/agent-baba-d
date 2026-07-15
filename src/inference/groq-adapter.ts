@@ -2,6 +2,7 @@ import { InferenceProvider, ModelDescriptor } from './interface.js';
 import { InferenceOptions, ProviderConfig } from '../config/types.js';
 import { logger } from '../utils/logger.js';
 import { streamCompletion } from './sse.js';
+import { getModelTags } from './model-catalog.js';
 
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 
@@ -100,12 +101,26 @@ export class GroqAdapter implements InferenceProvider {
       });
       if (!response.ok) return [];
       const data = (await response.json()) as { data: Array<{ id: string; owned_by?: string }> };
-      return (data.data || []).map((m: { id: string; owned_by?: string }) => ({
-        id: m.id,
-        name: m.id,
-        provider: 'groq',
-        owner: m.owned_by || 'groq',
-      }));
+
+      // Filter out non-chat models (speech/audio/whisper) that can't be used
+      // with the chat completions endpoint
+      const NON_CHAT_PATTERNS = [
+        /orpheus/i,
+        /whisper/i,
+        /distil-whisper/i,
+        /tts/i,
+        /audio/i,
+      ];
+
+      return (data.data || [])
+        .filter((m) => !NON_CHAT_PATTERNS.some((p) => p.test(m.id)))
+        .map((m: { id: string; owned_by?: string }) => ({
+          id: m.id,
+          name: m.id,
+          provider: 'groq',
+          owner: m.owned_by || 'groq',
+          tags: getModelTags(m.id, m.owned_by),
+        }));
     } catch {
       return [];
     }

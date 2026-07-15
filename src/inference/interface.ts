@@ -7,6 +7,12 @@ export interface ModelDescriptor {
   provider: string;
   owner?: string;
   description?: string;
+  /**
+   * Category tags indicating what this model is good for.
+   * Examples: 'chat', 'code', 'fast', 'reasoning', 'vision'
+   * Populated by the model-catalog utility when listing models.
+   */
+  tags?: string[];
 }
 
 import { InferenceOptions } from '../config/types.js';

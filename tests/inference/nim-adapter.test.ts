@@ -143,9 +143,9 @@ describe('NIMAdapter', () => {
       const models = await adapter.listModels();
 
       expect(models).toHaveLength(3);
-      expect(models[0]).toEqual({ id: 'meta/llama-3.1-8b-instruct', name: 'llama-3.1-8b-instruct', provider: 'nim', owner: 'meta' });
-      expect(models[1]).toEqual({ id: 'google/gemma-2-2b-it', name: 'gemma-2-2b-it', provider: 'nim', owner: 'google' });
-      expect(models[2]).toEqual({ id: 'mistralai/mistral-nemo', name: 'mistral-nemo', provider: 'nim', owner: 'mistral' });
+      expect(models[0]).toEqual({ id: 'meta/llama-3.1-8b-instruct', name: 'llama-3.1-8b-instruct', provider: 'nim', owner: 'meta', tags: expect.arrayContaining([expect.any(String)]) });
+      expect(models[1]).toEqual({ id: 'google/gemma-2-2b-it', name: 'gemma-2-2b-it', provider: 'nim', owner: 'google', tags: expect.arrayContaining([expect.any(String)]) });
+      expect(models[2]).toEqual({ id: 'mistralai/mistral-nemo', name: 'mistral-nemo', provider: 'nim', owner: 'mistral', tags: expect.arrayContaining([expect.any(String)]) });
 
       expect(mockFetch).toHaveBeenCalledWith('https://example.com/v1/models', {
         headers: { 'Authorization': 'Bearer test-key' },

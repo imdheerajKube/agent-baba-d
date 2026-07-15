@@ -3,6 +3,7 @@ import { InferenceOptions, ProviderConfig } from '../config/types.js';
 import { logger } from '../utils/logger.js';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { getModelTags } from './model-catalog.js';
 
 const OLLAMA_API_BASE = 'http://localhost:11434';
 
@@ -249,6 +250,7 @@ except Exception as e:
           id: m.name,
           name: m.name,
           provider: 'local',
+          tags: getModelTags(m.name),
         }));
       } catch {
         return [];
